@@ -278,8 +278,9 @@ function layoutAll(drag) {
     let y = p.y + p.h / 2 - total / 2;
     for (const k of ks) {
       const s = size(k.id), h = subH(k.id);
-      const x = dir > 0 ? p.x + p.w + HGAP(d) : p.x - HGAP(d) - s.w;
-      L[k.id] = { x, y: y + h / 2 - s.h / 2, w: s.w, h: s.h };
+      // dx/dy: the user's own shift from the automatic spot; children follow their parent
+      const x = (dir > 0 ? p.x + p.w + HGAP(d) : p.x - HGAP(d) - s.w) + (k.dx || 0);
+      L[k.id] = { x, y: y + h / 2 - s.h / 2 + (k.dy || 0), w: s.w, h: s.h };
       place(k.id, visKids(k.id), dir);
       y += h + VGAP(d);
     }
@@ -499,7 +500,7 @@ function drawWires() {
     const m = M[id], n = S.items[id];
     if (!n || m.depth === 0 || m.hidden) continue;
     const p = L[n.parent], c = L[id]; if (!p || !c) continue;
-    const dragging = dragView && dragView.ids[0] === id;
+    const dragging = dragView && dragView.ids[0] === id && !(dropHint && dropHint.mode === 'offset');
     h += `<path d="${branchPath(p, c, m.dir)}" stroke="${m.color}" stroke-width="${m.depth === 1 ? 3 : 2}" fill="none" stroke-linecap="round"${dragging ? ' stroke-dasharray="4 6" opacity=".55"' : ''}/>`;
   }
   for (const id in S.items) {
@@ -567,7 +568,7 @@ function drawOverlay() {
   }
   if (gesture && gesture.kind === 'nodedrag' && gesture.moved && dropHint && gesture.lx != null) {
     const t = dropHint.target && S.items[dropHint.target];
-    const msg = dropHint.mode === 'none' ? 'Loslassen: zurück an den alten Platz'
+    const msg = dropHint.mode === 'offset' ? 'Loslassen: hier platzieren · mit ⇧ als eigene Mindmap lösen'
       : dropHint.mode === 'free' ? 'Loslassen: als eigene Mindmap lösen'
       : dropHint.mode === 'child' ? `Wird Unterthema von „${((t && t.text) || 'Thema').slice(0, 28)}“` : 'Hier einsortieren';
     h += `<div class="ov drag-hint" style="left:${r1(gesture.lx + 16)}px;top:${r1(gesture.ly + 20)}px">${esc(msg)}</div>`;
@@ -680,11 +681,24 @@ function ensureVisible(id) {
   if (p.y < m) dy = m - p.y; else if (p.y + H > innerHeight - m) dy = innerHeight - m - p.y - H;
   if (dx || dy) { S.cam.x += dx; S.cam.y += dy; applyCam(); }
 }
+function hasSelectedAncestor(n) {
+  let c = n, guard = 0;
+  while (c && c.parent && guard++ < 500) { if (S.sel.has(c.parent)) return true; c = S.items[c.parent]; }
+  return false;
+}
+function setOffset(n, dx, dy) {
+  n.dx = r1(dx); n.dy = r1(dy);
+  if (!n.dx) delete n.dx;
+  if (!n.dy) delete n.dy;
+}
 function nudge(dx, dy) {
   let moved = false;
   for (const id of S.sel) {
     const n = S.items[id]; if (!n) continue;
-    if (n.type === 'node' && !isRootNode(n)) continue;
+    if (n.type === 'node' && !isRootNode(n)) {
+      if (!hasSelectedAncestor(n)) { setOffset(n, (n.dx || 0) + dx, (n.dy || 0) + dy); moved = true; }
+      continue;
+    }
     if (n.type === 'link') { for (const e of [n.a, n.b]) if (e && !e.id) { e.x += dx; e.y += dy; moved = true; } continue; }
     n.x = r1(n.x + dx); n.y = r1(n.y + dy); moved = true;
   }
@@ -718,7 +732,7 @@ function copyData() {
     if (n.type === 'node' && (!n.parent || !set.has(n.parent))) {
       const r = L[id]; if (r) { n.x = r1(r.x); n.y = r1(r.y); }
       if (!n.color && M[id] && M[id].color) n.color = M[id].color;
-      n.parent = null; delete n.side;
+      n.parent = null; delete n.side; delete n.dx; delete n.dy;
     }
     if (n.type === 'link') for (const e of ['a', 'b']) if (n[e].id && !set.has(n[e].id)) { const r = L[n[e].id]; n[e] = r ? { x: r.x + r.w / 2, y: r.y + r.h / 2 } : { x: 0, y: 0 }; }
     items.push(n);
@@ -802,7 +816,10 @@ function captureOrig() {
   const o = {};
   for (const id of S.sel) {
     const n = S.items[id]; if (!n) continue;
-    if (n.type === 'node' && !isRootNode(n)) continue;
+    if (n.type === 'node' && !isRootNode(n)) {
+      if (!hasSelectedAncestor(n)) o[id] = { off: true, dx: n.dx || 0, dy: n.dy || 0 };
+      continue;
+    }
     o[id] = n.type === 'link' ? { a: clone(n.a), b: clone(n.b) } : { x: n.x, y: n.y };
   }
   return o;
@@ -811,6 +828,7 @@ function applyMove(g, dx, dy) {
   for (const id in g.orig) {
     const n = S.items[id], o = g.orig[id]; if (!n) continue;
     if (n.type === 'link') { for (const e of ['a', 'b']) if (n[e] && !n[e].id) { n[e].x = r1(o[e].x + dx); n[e].y = r1(o[e].y + dy); } }
+    else if (o.off) setOffset(n, o.dx + dx, o.dy + dy);
     else { n.x = r1(o.x + dx); n.y = r1(o.y + dy); }
   }
 }
@@ -861,6 +879,11 @@ stage.addEventListener('pointerdown', e => {
   }
   if (itEl) {
     const id = itEl.dataset.id, n = S.items[id]; if (!n) return;
+    // Shift on a branch: a click adds it to the selection, a drag detaches it as its own mindmap
+    if (e.shiftKey && !S.readOnly && n.type === 'node' && !isRootNode(n)) {
+      gesture = { kind: 'nodedrag', id, sx, sy, start: pt, moved: false, pid: e.pointerId, toggleOnClick: true, shift: true };
+      capture(e); return;
+    }
     if (e.shiftKey || e.metaKey || e.ctrlKey) { if (S.sel.has(id)) S.sel.delete(id); else S.sel.add(id); render(); return; }
     const wasSel = S.sel.has(id);
     if (!wasSel) S.sel = new Set([id]);
@@ -928,9 +951,9 @@ window.addEventListener('pointermove', e => {
     g.moved = true; applyMove(g, pt.x - g.start.x, pt.y - g.start.y); render();
   } else if (g.kind === 'nodedrag') {
     if (!g.moved && Math.hypot(sx - g.sx, sy - g.sy) < 5) return;
-    if (!g.moved) { g.moved = true; g.ids = subtreeIds(g.id); g.ex = new Set(g.ids); }
+    if (!g.moved) { g.moved = true; g.ids = subtreeIds(g.id); g.ex = new Set(g.ids); S.sel = new Set([g.id]); }
     dragView = { ids: g.ids, dx: pt.x - g.start.x, dy: pt.y - g.start.y };
-    g.lx = sx; g.ly = sy;
+    g.lx = sx; g.ly = sy; g.shift = e.shiftKey;
     dropHint = computeDrop(sx, sy, pt, g); render();
   } else if (g.kind === 'resize') {
     const n = S.items[g.id]; if (!n) return;
@@ -957,7 +980,7 @@ window.addEventListener('pointermove', e => {
 });
 function computeDrop(sx, sy, pt, g) {
   const id = hitItem(sx, sy, g.ex, n => n.type === 'node');
-  if (!id || !L[id] || !M[id]) return Math.hypot(sx - g.sx, sy - g.sy) < 60 ? { mode: 'none' } : { mode: 'free' };
+  if (!id || !L[id] || !M[id]) return { mode: g.shift ? 'free' : 'offset' };
   const r = L[id], m = M[id];
   if (m.depth === 0) return { mode: 'child', target: id, side: pt.x < r.x + r.w / 2 ? 'l' : 'r' };
   const rel = (pt.y - r.y) / r.h;
@@ -965,13 +988,22 @@ function computeDrop(sx, sy, pt, g) {
   if (rel > 0.7) return { mode: 'after', target: id };
   return { mode: 'child', target: id };
 }
-function applyDrop(g) {
+function refreshDropHint() {
+  if (!gesture || gesture.kind !== 'nodedrag' || !dropHint) return;
+  if (dropHint.mode === 'offset' || dropHint.mode === 'free') { dropHint = { mode: gesture.shift ? 'free' : 'offset' }; render(); }
+}
+function applyDrop(g, shift) {
   const n = S.items[g.id], h = dropHint; if (!n || !h || h.mode === 'none') return;
-  if (h.mode === 'free') {
+  if (h.mode === 'offset' || h.mode === 'free') h.mode = shift ? 'free' : 'offset';
+  if (h.mode === 'offset') {
+    if (!dragView) return;
+    setOffset(n, (n.dx || 0) + dragView.dx, (n.dy || 0) + dragView.dy);
+  } else if (h.mode === 'free') {
     const r = L[g.id]; if (!r) return;
     if (!n.color && M[g.id] && M[g.id].color) n.color = M[g.id].color;
-    n.parent = null; delete n.side; n.x = r1(r.x); n.y = r1(r.y);
+    n.parent = null; delete n.side; delete n.dx; delete n.dy; n.x = r1(r.x); n.y = r1(r.y);
   } else {
+    delete n.dx; delete n.dy;
     const t = S.items[h.target]; if (!t || g.ex.has(t.id)) return;
     let parent, order;
     if (h.mode === 'child') {
@@ -1001,7 +1033,11 @@ function endGesture(e) {
   if (g.kind === 'pan') stage.classList.remove('grabbing', ...(spaceDown || S.tool === 'hand' ? [] : ['panning']));
   else if (g.kind === 'marquee') marquee = null;
   else if (g.kind === 'move') { if (g.moved) commit(); else if (g.clickId && S.sel.size > 1) S.sel = new Set([g.clickId]); }
-  else if (g.kind === 'nodedrag') { if (g.moved) applyDrop(g); dragView = null; dropHint = null; }
+  else if (g.kind === 'nodedrag') {
+    if (g.moved) applyDrop(g, e.shiftKey);
+    else if (g.toggleOnClick) { if (S.sel.has(g.id)) S.sel.delete(g.id); else S.sel.add(g.id); }
+    dragView = null; dropHint = null;
+  }
   else if (g.kind === 'resize') { if (g.moved) commit(); }
   else if (g.kind === 'end') commit();
   else if (g.kind === 'link') {
@@ -1107,6 +1143,7 @@ const inField = t => t && t.closest && t.closest('input, textarea, select, [cont
 let pasteSeen = false;
 window.addEventListener('keydown', e => {
   const mod = e.metaKey || e.ctrlKey, k = e.key;
+  if (k === 'Shift' && gesture && gesture.kind === 'nodedrag') { gesture.shift = true; refreshDropHint(); return; }
   if (S.editing) {
     const n = S.items[S.editing]; if (!n || n.type === 'link') return;
     if (k === 'Escape') { e.preventDefault(); finishEdit('escape'); return; }
@@ -1157,6 +1194,7 @@ window.addEventListener('keydown', e => {
   if (!e.altKey && tools[lower]) { e.preventDefault(); setTool(tools[lower]); }
 });
 window.addEventListener('keyup', e => {
+  if (e.key === 'Shift' && gesture && gesture.kind === 'nodedrag') { gesture.shift = false; refreshDropHint(); }
   if (e.key === ' ' && spaceDown) { spaceDown = false; if (!(gesture && gesture.kind === 'pan') && S.tool !== 'hand') stage.classList.remove('panning'); }
 });
 window.addEventListener('blur', () => { spaceDown = false; stage.classList.remove('panning', 'grabbing'); });
@@ -1208,7 +1246,9 @@ const IC = {
   rect: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="6" width="16" height="12" rx="2"/></svg>',
   ellipse: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="12" rx="8.5" ry="6.5"/></svg>',
   diamond: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3.5 20.5 12 12 20.5 3.5 12Z"/></svg>',
+  relayout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 4.5v4h4"/></svg>',
 };
+const hasOffsets = ids => ids.some(id => S.items[id] && S.items[id].type === 'node' && subtreeIds(id).some(x => S.items[x] && (S.items[x].dx || S.items[x].dy)));
 const swatch = (c, on, act, title) => `<button class="sw${on ? ' on' : ''}" style="--c:${c}" data-act="${act}" title="${title || ''}" aria-label="${title || 'Farbe'}"></button>`;
 const ibtn = (act, icon, title, on) => `<button class="btn${on ? ' on' : ''}" data-act="${act}" title="${title}" aria-label="${title}"${on ? ' style="background:var(--accent-soft);color:var(--accent)"' : ''}>${IC[icon]}</button>`;
 let ctxKey = '';
@@ -1218,7 +1258,8 @@ function updateCtx() {
   if (!show) { if (!ctx.hidden) ctx.hidden = true; ctxKey = ''; return; }
   const items = ids.map(id => S.items[id]), types = new Set(items.map(n => n.type));
   const one = items.length === 1 ? items[0] : null, t = types.size === 1 ? items[0].type : 'mixed';
-  const key = ids.join(',') + '|' + items.map(n => [n.color, n.shape, n.arrow, n.style, n.dash, n.size, n.collapsed].join(':')).join(';') + (one && M[one.id] ? M[one.id].kids.length + ':' + M[one.id].depth : '');
+  const moved = t === 'node' && hasOffsets(ids);
+  const key = ids.join(',') + '|' + items.map(n => [n.color, n.shape, n.arrow, n.style, n.dash, n.size, n.collapsed].join(':')).join(';') + (one && M[one.id] ? M[one.id].kids.length + ':' + M[one.id].depth : '') + (moved ? '|moved' : '');
   if (key !== ctxKey) {
     ctxKey = key; let h = '';
     if (t === 'node') {
@@ -1229,6 +1270,7 @@ function updateCtx() {
         h += '<div class="sep"></div>' + ibtn('child', 'child', 'Unterthema hinzufügen (Tab)');
         if (M[one.id] && M[one.id].kids.length) h += ibtn('fold', one.collapsed ? 'unfold' : 'fold', one.collapsed ? 'Aufklappen' : 'Zuklappen');
       }
+      if (moved) h += (one ? '' : '<div class="sep"></div>') + ibtn('relayout', 'relayout', 'Anordnung zurücksetzen');
     } else if (t === 'sticky' || t === 'shape') {
       for (const c of STICKY) h += swatch(c, items.every(n => n.color === c), 'color:' + c);
       if (t === 'shape') { h += '<div class="sep"></div>'; for (const s of ['rect', 'ellipse', 'diamond']) h += ibtn('shape:' + s, s, { rect: 'Rechteck', ellipse: 'Ellipse', diamond: 'Raute' }[s], items.every(n => (n.shape || 'rect') === s)); }
@@ -1273,6 +1315,7 @@ ctx.addEventListener('click', e => {
   else if (act === 'label') { editLabel(ids[0]); return; }
   else if (act === 'child') { addChild(ids[0]); return; }
   else if (act === 'fold') { toggleCollapse(ids[0]); return; }
+  else if (act === 'relayout') { for (const id of ids) for (const x of subtreeIds(id)) { const n = S.items[x]; if (n) { delete n.dx; delete n.dy; } } }
   else if (act === 'front') { let z = maxZ(); for (const n of items) n.z = ++z; }
   else if (act === 'delete') { deleteSelection(); return; }
   commit(); render();

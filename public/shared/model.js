@@ -33,7 +33,7 @@ const str = (v, max = LIMITS.textLength) => (typeof v === 'string' ? v.slice(0, 
 const col = v => (typeof v === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(v) ? v : undefined);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
-const KNOWN = new Set(['id', 'type', 'z', 'parent', 'order', 'text', 'x', 'y', 'side', 'color', 'collapsed',
+const KNOWN = new Set(['id', 'type', 'z', 'parent', 'order', 'text', 'x', 'y', 'dx', 'dy', 'side', 'color', 'collapsed',
   'a', 'b', 'label', 'arrow', 'style', 'dash', 'w', 'h', 'shape', 'size', 'pts', 'width']);
 
 /** Normalise one item of a known type. Unknown fields are carried over unchanged. */
@@ -44,6 +44,9 @@ export function sanitizeItem(n) {
     o.order = num(n.order, 1);
     o.text = str(n.text);
     if (!o.parent) { o.x = num(n.x); o.y = num(n.y); }
+    // since 1.1.0: a branch moved by hand keeps its shift from the automatic layout
+    if (o.parent && num(n.dx)) o.dx = num(n.dx);
+    if (o.parent && num(n.dy)) o.dy = num(n.dy);
     if (n.side === 'l' || n.side === 'r') o.side = n.side;
     if (col(n.color)) o.color = col(n.color);
     if (n.collapsed) o.collapsed = true;

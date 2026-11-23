@@ -162,3 +162,17 @@ test('items of unknown future types are stored untouched', async () => {
   assert.deepEqual(b.data.items.img1, { ...future, id: 'img1' });
   await s.app.close();
 });
+
+test('hand-placed branch positions (dx/dy, since 1.1.0) are stored', async () => {
+  const s = await start(await tmp());
+  const { data } = await s.call('POST', '/api/boards', { name: 'Anordnung' });
+  await s.call('POST', `/api/boards/${data.id}/changes`, { changes: [
+    { id: 'r', data: { type: 'node', parent: null, order: 1, text: 'Wurzel', x: 0, y: 0, dx: 50 } },
+    { id: 'k', data: { type: 'node', parent: 'r', order: 1, text: 'Ast', dx: 120.5, dy: -40 } },
+  ] });
+  const b = await s.call('GET', `/api/boards/${data.id}`);
+  assert.equal(b.data.items.k.dx, 120.5);
+  assert.equal(b.data.items.k.dy, -40);
+  assert.equal(b.data.items.r.dx, undefined, 'root nodes are placed by x/y, not dx');
+  await s.app.close();
+});
