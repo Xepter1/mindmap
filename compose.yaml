@@ -1,0 +1,25 @@
+# Ideenraum auf dem Heimserver starten:
+#   mkdir -p data && docker compose up -d --build
+# Danach im Browser: http://<IP-des-Servers>:8090
+services:
+  ideenraum:
+    build: .
+    # Alternativ das fertige Image von GitHub nehmen (siehe README), dann "build: ." entfernen:
+    # image: ghcr.io/DEIN-GITHUB-NAME/ideenraum:latest
+    image: ideenraum:latest
+    container_name: ideenraum
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    volumes:
+      # Deine Boards, Backups und der Papierkorb. Liegen neben dieser Datei
+      # und bleiben bei jedem Update erhalten.
+      - ./data:/data
+    environment:
+      TZ: Europe/Berlin
+      # Passwortschutz einschalten (empfohlen, sobald andere in deinem Netz sind):
+      # IDEENRAUM_PASSWORD: "ein-gutes-passwort"
+      # Wie viele tägliche Sicherungen aufbewahrt werden:
+      # BACKUP_KEEP_DAYS: "14"
+      # Wie lange gelöschte Boards im Papierkorb bleiben (Tage):
+      # TRASH_KEEP_DAYS: "30"

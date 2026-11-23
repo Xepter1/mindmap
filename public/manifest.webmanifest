@@ -1,0 +1,12 @@
+{
+  "name": "Ideenraum",
+  "short_name": "Ideenraum",
+  "description": "Mindmaps und Whiteboards auf deinem eigenen Server",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F3F4F7",
+  "theme_color": "#3A62F2",
+  "icons": [
+    { "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

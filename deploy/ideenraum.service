@@ -1,0 +1,21 @@
+# Ideenraum ohne Docker als systemd-Dienst betreiben.
+# Kopieren nach /etc/systemd/system/ideenraum.service, Pfade/Benutzer anpassen, dann:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now ideenraum
+[Unit]
+Description=Ideenraum (Mindmaps)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/opt/ideenraum
+Environment=PORT=8090
+Environment=DATA_DIR=/opt/ideenraum/data
+# Environment=IDEENRAUM_PASSWORD=ein-gutes-passwort
+ExecStart=/usr/bin/node server/index.js
+Restart=on-failure
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

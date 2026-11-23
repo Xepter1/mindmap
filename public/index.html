@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ideenraum</title>
+<meta name="description" content="Selbst gehostete Mindmaps und Whiteboards">
+<meta name="theme-color" content="#F3F4F7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#13151A" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Figtree:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="styles.css">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<div id="app">
+  <div id="stage" tabindex="0" aria-label="Zeichenfläche">
+    <div id="world">
+      <svg id="wires" aria-hidden="true"><defs></defs><g id="wireG"></g></svg>
+      <div id="items"></div>
+      <div id="labels"></div>
+    </div>
+    <div id="overlay"></div>
+  </div>
+
+  <div class="panel topbar-l">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="8" y="9" width="8" height="6" rx="2.2" fill="var(--accent)"/>
+        <path d="M16 12c2.2 0 2.4-5 4.6-5M16 12c2.2 0 2.4 5 4.6 5M8 12c-2.2 0-2.4-5-4.6-5M8 12c-2.2 0-2.4 5-4.6 5" stroke="var(--ink)" stroke-width="1.7" stroke-linecap="round"/>
+      </svg>
+      <span>Ideenraum</span>
+    </div>
+    <div class="sep"></div>
+    <button class="btn" id="boardBtn" aria-haspopup="true" title="Boards">
+      <span class="board-name" id="boardName">Board</span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+    </button>
+  </div>
+
+  <div class="panel topbar-r">
+    <div class="status local" id="status" title=""><i></i><span id="statusText" class="hide-sm">Lädt …</span></div>
+    <button class="btn" id="undoBtn" title="Rückgängig (⌘Z)" aria-label="Rückgängig" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
+    </button>
+    <button class="btn" id="redoBtn" title="Wiederholen (⇧⌘Z)" aria-label="Wiederholen" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg>
+    </button>
+    <div class="sep"></div>
+    <button class="btn" id="exportBtn" title="Export &amp; Import" aria-label="Export und Import" aria-haspopup="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+      <span class="hide-sm">Export</span>
+    </button>
+    <button class="btn" id="helpBtn" title="Tastenkürzel &amp; Hilfe (?)" aria-label="Hilfe">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.3a2.5 2.5 0 0 1 4.8.9c0 1.7-2.4 2.2-2.4 3.6"/><path d="M12 17.2h.01"/></svg>
+    </button>
+  </div>
+
+  <nav class="panel tools" id="tools" aria-label="Werkzeuge">
+    <button class="tool on" data-tool="select" data-tip="Auswählen" data-key="V" aria-label="Auswählen">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"><path d="M5 3.5 18.5 10l-6 1.6-2.7 5.9Z"/></svg>
+    </button>
+    <button class="tool" data-tool="hand" data-tip="Verschieben" data-key="H" aria-label="Verschieben">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V11"/><path d="M11 10.5v-6a1.5 1.5 0 0 1 3 0v6"/><path d="M14 10.5V6a1.5 1.5 0 0 1 3 0v7.5"/><path d="M8 12.5 6.6 11a1.6 1.6 0 0 0-2.4 2.1l3.3 4.6A6 6 0 0 0 12.4 20h.6a5 5 0 0 0 5-5v-1.5"/></svg>
+    </button>
+    <div class="sep"></div>
+    <button class="tool" data-tool="node" data-tip="Mindmap" data-key="M" aria-label="Mindmap">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="9.5" width="7" height="5" rx="1.8"/><rect x="15" y="3.5" width="6" height="4" rx="1.5"/><rect x="15" y="16.5" width="6" height="4" rx="1.5"/><path d="M10 12c3 0 2-6.5 5-6.5M10 12c3 0 2 6.5 5 6.5"/></svg>
+    </button>
+    <button class="tool" data-tool="sticky" data-tip="Haftnotiz" data-key="N" aria-label="Haftnotiz">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M4 4h16v10l-6 6H4Z"/><path d="M14 20v-6h6"/></svg>
+    </button>
+    <button class="tool" data-tool="text" data-tip="Text" data-key="T" aria-label="Text">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 6V4.5h14V6"/><path d="M12 4.5v15"/><path d="M9 19.5h6"/></svg>
+    </button>
+    <button class="tool" data-tool="shape" data-tip="Form" data-key="R" aria-label="Form">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="3.5" width="10" height="10" rx="1.5"/><circle cx="15.5" cy="15.5" r="5"/></svg>
+    </button>
+    <button class="tool" data-tool="link" data-tip="Verbindung" data-key="L" aria-label="Verbindung">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 19.5C10 19 12 6 19 5"/><path d="m14.5 3.8 4.7 1.1-2.2 4.3"/></svg>
+    </button>
+    <button class="tool" data-tool="pen" data-tip="Stift" data-key="P" aria-label="Stift">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5 18.5 9.5"/><path d="M4 20l1-4.5L16 4.5a2 2 0 0 1 3 0l.5.5a2 2 0 0 1 0 3L8.5 19Z"/></svg>
+    </button>
+  </nav>
+
+  <div class="panel zoom" aria-label="Zoom">
+    <button class="btn" id="zoomOut" title="Verkleinern (⌘−)" aria-label="Verkleinern">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 12h12"/></svg>
+    </button>
+    <button class="btn pct" id="zoomPct" title="Auf 100 % setzen">100 %</button>
+    <button class="btn" id="zoomIn" title="Vergrößern (⌘+)" aria-label="Vergrößern">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 12h12M12 6v12"/></svg>
+    </button>
+    <div class="sep"></div>
+    <button class="btn" id="zoomFit" title="Alles anzeigen (⇧1)" aria-label="Alles anzeigen">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+    </button>
+  </div>
+
+  <div class="panel ctxbar" id="ctx" hidden></div>
+  <div class="panel flyout" id="flyout" hidden></div>
+  <div class="panel menu" id="boardsMenu" hidden></div>
+  <div class="panel menu" id="exportMenu" hidden></div>
+
+  <div class="panel help" id="help" hidden role="dialog" aria-label="Hilfe">
+    <button class="btn close" id="helpClose" aria-label="Schließen">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+    </button>
+    <h2>So funktioniert Ideenraum</h2>
+    <p>Doppelklick auf eine freie Stelle startet eine neue Mindmap. Mit <kbd>Tab</kbd> und <kbd>Enter</kbd> baust du sie Ast für Ast aus, ohne die Maus anzufassen.</p>
+    <dl>
+      <dt><kbd>Tab</kbd></dt><dd>Unterthema zum ausgewählten Knoten</dd>
+      <dt><kbd>Enter</kbd></dt><dd>Geschwister-Thema (beim Bearbeiten: fertig)</dd>
+      <dt><kbd>⇧</kbd> <kbd>Enter</kbd></dt><dd>Zeilenumbruch im Text</dd>
+      <dt>Doppelklick / <kbd>F2</kbd></dt><dd>Text bearbeiten</dd>
+      <dt>Pfeiltasten</dt><dd>Zwischen Knoten wechseln, andere Elemente verschieben</dd>
+      <dt>Knoten ziehen</dt><dd>Auf einen anderen Knoten ablegen, um ihn umzuhängen; ins Leere ziehen löst ihn als eigene Mindmap</dd>
+      <dt><kbd>Leertaste</kbd> + Ziehen</dt><dd>Fläche verschieben (auch: mittlere Maustaste, zwei Finger)</dd>
+      <dt><kbd>⌘</kbd> + Scrollen</dt><dd>Zoomen (auch: Pinch auf dem Trackpad)</dd>
+      <dt><kbd>⇧</kbd> <kbd>1</kbd></dt><dd>Alles anzeigen</dd>
+      <dt><kbd>⌘</kbd> <kbd>Z</kbd> / <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>Z</kbd></dt><dd>Rückgängig / Wiederholen</dd>
+      <dt><kbd>⌘</kbd> <kbd>C</kbd> <kbd>V</kbd> <kbd>D</kbd></dt><dd>Kopieren, Einfügen, Duplizieren</dd>
+      <dt><kbd>Entf</kbd></dt><dd>Auswahl löschen (Knoten samt Unterthemen)</dd>
+      <dt>V H M N T R L P</dt><dd>Werkzeuge: Auswählen, Verschieben, Mindmap, Haftnotiz, Text, Form, Verbindung, Stift</dd>
+      <dt>Text einfügen</dt><dd>Mehrzeiliger Text bei ausgewähltem Knoten wird zu Unterthemen</dd>
+    </dl>
+    <div class="help-foot"><span id="appVersion"></span><button class="btn" id="logoutBtn" hidden>Abmelden</button></div>
+  </div>
+
+  <div class="panel center-card" id="loading">
+    <div class="spinner" aria-hidden="true"></div>
+    <h2>Boards werden geladen</h2>
+    <p id="loadingText">Einen Moment, deine Mindmaps kommen gleich.</p>
+  </div>
+
+  <div class="panel center-card" id="empty" hidden>
+    <svg viewBox="0 0 120 56" width="120" height="56" fill="none" aria-hidden="true">
+      <rect x="44" y="20" width="32" height="16" rx="5" fill="var(--root-bg)"/>
+      <path d="M76 28c12 0 10-16 22-16M76 28c12 0 10 16 22 16M44 28c-12 0-10-16-22-16M44 28c-12 0-10 16-22 16" stroke="var(--link)" stroke-width="2" stroke-linecap="round"/>
+      <rect x="98" y="6" width="18" height="11" rx="3.5" fill="#F2704D" opacity=".85"/><rect x="98" y="39" width="18" height="11" rx="3.5" fill="#3FAE6A" opacity=".85"/>
+      <rect x="4" y="6" width="18" height="11" rx="3.5" fill="#3D7DE8" opacity=".85"/><rect x="4" y="39" width="18" height="11" rx="3.5" fill="#F0A23B" opacity=".85"/>
+    </svg>
+    <h2>Noch keine Boards</h2>
+    <p>Hier erscheinen deine Mindmaps. Leg ein leeres Board an oder starte mit einer Beispiel-Mindmap zum Ausprobieren.</p>
+    <div class="row">
+      <button class="btn primary" id="emptyNew">Leeres Board</button>
+      <button class="btn" id="emptySample" style="border:1px solid var(--line)">Mit Beispiel starten</button>
+    </div>
+  </div>
+
+  <div id="toast" hidden></div>
+  <input type="file" id="importFile" accept=".json,application/json" hidden>
+</div>
+</body>
+</html>
