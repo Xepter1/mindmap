@@ -12,3 +12,4 @@ Erste selbst gehostete Version. Datenformat 1.
 - Komplette Sicherung herunterladen und wieder einspielen
 - Optionaler Passwortschutz
 - Docker-Image für x86 und ARM (Raspberry Pi)
+- Portainer-Stack (`deploy/portainer.yml`), den der Release-Workflow bei jeder neuen Version automatisch aktualisiert

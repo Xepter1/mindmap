@@ -1,0 +1,29 @@
+# Stack für Portainer (Stacks → Add stack → Repository)
+#   Repository URL:  https://github.com/Xepter1/mindmap
+#   Reference:       refs/heads/main
+#   Compose path:    deploy/portainer.yml
+#
+# Das Image baut GitHub bei jedem Release (Workflow "Release") für x86 und ARM.
+# Die image-Zeile unten setzt der Workflow dabei automatisch auf die neue Version,
+# Portainer erkennt die Änderung und rollt sie aus. Nicht von Hand ändern.
+services:
+  ideenraum:
+    image: ghcr.io/xepter1/ideenraum:1.0.0
+    container_name: ideenraum
+    restart: unless-stopped
+    ports:
+      - "${IDEENRAUM_PORT:-8090}:8090"
+    volumes:
+      # Deine Boards, Backups und der Papierkorb. Das Volume bleibt bei Updates
+      # und auch beim Löschen des Stacks erhalten.
+      - ideenraum-data:/data
+    environment:
+      TZ: ${TZ:-Europe/Berlin}
+      # In Portainer unter "Environment variables" setzen, z. B. IDEENRAUM_PASSWORD:
+      IDEENRAUM_PASSWORD: ${IDEENRAUM_PASSWORD:-}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+      TRASH_KEEP_DAYS: ${TRASH_KEEP_DAYS:-30}
+
+volumes:
+  ideenraum-data:
+    name: ideenraum-data
