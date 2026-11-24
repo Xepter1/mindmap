@@ -8,7 +8,7 @@
 # Portainer erkennt die Änderung und rollt sie aus. Nicht von Hand ändern.
 services:
   ideenraum:
-    image: ghcr.io/xepter1/ideenraum:1.2.0
+    image: ghcr.io/xepter1/ideenraum:1.3.0
     container_name: ideenraum
     restart: unless-stopped
     ports:
