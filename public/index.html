@@ -103,6 +103,22 @@
 
   <div class="panel ctxbar" id="ctx" hidden></div>
   <div class="panel flyout" id="flyout" hidden></div>
+
+  <aside class="panel notes" id="notes" hidden aria-label="Notizen">
+    <div class="notes-head">
+      <span class="notes-kicker">Notizen</span>
+      <button class="btn" id="notesClose" title="Schließen (Esc)" aria-label="Notizen schließen">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="notes-body" id="notesBody">
+      <nav class="notes-path" id="notesPath" aria-label="Übergeordnete Themen"></nav>
+      <textarea class="notes-title" id="notesTitle" rows="1" maxlength="5000" spellcheck="false" aria-label="Thema"></textarea>
+      <textarea class="notes-text" id="notesText" aria-label="Notizen zum Thema"></textarea>
+      <div class="notes-foot" id="notesFoot" hidden></div>
+    </div>
+    <p class="notes-empty" id="notesEmpty" hidden>Klicke ein Thema der Mindmap an, dann erscheinen hier seine Notizen.</p>
+  </aside>
   <div class="panel menu" id="boardsMenu" hidden></div>
   <div class="panel menu" id="exportMenu" hidden></div>
 
@@ -111,12 +127,15 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
     </button>
     <h2>So funktioniert Ideenraum</h2>
-    <p>Doppelklick auf eine freie Stelle startet eine neue Mindmap. Mit <kbd>Tab</kbd> und <kbd>Enter</kbd> baust du sie Ast für Ast aus, ohne die Maus anzufassen.</p>
+    <p>Doppelklick auf eine freie Stelle startet eine neue Mindmap. Mit <kbd>Tab</kbd> und <kbd>Enter</kbd> baust du sie Ast für Ast aus, ohne die Maus anzufassen. Ein Doppelklick auf ein Thema öffnet rechts seine Notizen, etwa für einen Ablauf.</p>
     <dl>
       <dt><kbd>Tab</kbd></dt><dd>Unterthema zum ausgewählten Knoten</dd>
       <dt><kbd>Enter</kbd></dt><dd>Geschwister-Thema (beim Bearbeiten: fertig)</dd>
       <dt><kbd>⇧</kbd> <kbd>Enter</kbd></dt><dd>Zeilenumbruch im Text</dd>
-      <dt>Doppelklick / <kbd>F2</kbd></dt><dd>Text bearbeiten</dd>
+      <dt><kbd>F2</kbd> oder lostippen</dt><dd>Text eines Themas bearbeiten</dd>
+      <dt>Doppelklick</dt><dd>Auf ein Thema: Notizen öffnen. Auf Haftnotiz, Form oder Text: Text bearbeiten</dd>
+      <dt><kbd>⌘</kbd> <kbd>Enter</kbd></dt><dd>Zwischen Thema und Notizen wechseln</dd>
+      <dt>Notizfeld</dt><dd>Folgt der Auswahl. Listen mit „1.“ oder „-“ setzt <kbd>Enter</kbd> fort</dd>
       <dt>Pfeiltasten</dt><dd>Zwischen Knoten wechseln, andere Elemente verschieben</dd>
       <dt>Knoten ziehen</dt><dd>Ins Leere ziehen verschiebt den Ast samt Unterthemen. Auf einen anderen Knoten ablegen hängt ihn um.</dd>
       <dt><kbd>⇧</kbd> + Knoten ziehen</dt><dd>Ins Leere ziehen löst ihn als eigene Mindmap</dd>

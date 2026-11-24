@@ -17,6 +17,7 @@ export const LIMITS = {
   itemsPerBoard: 20000,
   nameLength: 120,
   textLength: 5000,
+  noteLength: 20000,
   points: 20000,
 };
 
@@ -34,7 +35,7 @@ const col = v => (typeof v === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(v) ? v : u
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 const KNOWN = new Set(['id', 'type', 'z', 'parent', 'order', 'text', 'x', 'y', 'dx', 'dy', 'side', 'color', 'collapsed',
-  'a', 'b', 'label', 'arrow', 'style', 'dash', 'w', 'h', 'shape', 'size', 'pts', 'width']);
+  'a', 'b', 'label', 'arrow', 'style', 'dash', 'w', 'h', 'shape', 'size', 'pts', 'width', 'note']);
 
 /** Normalise one item of a known type. Unknown fields are carried over unchanged. */
 export function sanitizeItem(n) {
@@ -71,6 +72,9 @@ export function sanitizeItem(n) {
   } else {
     return Object.assign({}, n); // unknown type from a newer version: keep untouched
   }
+  // since 1.2.0: free-text notes (the app shows them for mindmap topics); blank notes are dropped
+  const note = str(n.note, LIMITS.noteLength);
+  if (note.trim()) o.note = note;
   for (const k of Object.keys(n)) if (!KNOWN.has(k) && !(k in o)) o[k] = n[k];
   return o;
 }

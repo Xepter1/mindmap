@@ -3,6 +3,7 @@
 Mindmaps und Whiteboards im Browser, gehostet auf deinem eigenen Server (Raspberry Pi oder jeder andere Rechner).
 
 - Mindmaps per Tastatur: `Tab` für ein Unterthema, `Enter` für ein Thema auf derselben Ebene, Pfeiltasten zum Navigieren
+- Notizen zu jedem Thema in einer Seitenleiste, zum Beispiel für Abläufe oder Lernstoff (Doppelklick aufs Thema)
 - Haftnotizen, Text, Formen, Pfeile mit Beschriftung, Stift
 - Mehrere Boards, Export als PNG oder JSON, komplette Sicherung mit einem Klick
 - Mehrere Geräte gleichzeitig: Änderungen erscheinen sofort überall (Laptop, Tablet, Handy)

@@ -72,6 +72,10 @@ button{font:inherit;color:inherit}
 .lbl.empty{padding:0}
 .toggle{position:absolute;width:18px;height:18px;border-radius:50%;background:var(--surface);border:1.5px solid var(--c);color:var(--ink);
   font-size:10px;font-weight:700;display:grid;place-items:center;cursor:pointer;line-height:1}
+.note-badge{position:absolute;top:-9px;right:-9px;width:20px;height:20px;border-radius:50%;display:grid;place-items:center;cursor:pointer;
+  background:var(--surface);border:1.5px solid var(--c);color:var(--c);box-shadow:0 1px 3px rgba(20,24,33,.18)}
+.note-badge:hover{background:var(--c);color:var(--surface)}
+.note-badge svg{width:12px;height:12px;pointer-events:none}
 
 /* ---- overlay (screen space) ---- */
 .ov{position:absolute;pointer-events:none}
@@ -166,6 +170,35 @@ kbd{font-family:var(--font-ui);font-size:12px;font-weight:600;background:var(--s
 }
 @media (max-height:520px){.tool{width:34px;height:32px}}
 .help-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:18px;padding-top:12px;border-top:1px solid var(--line);color:var(--muted);font-size:12.5px}
+
+/* ---- notes: side panel on the right, bottom sheet on phones ---- */
+.notes{right:calc(12px + env(safe-area-inset-right,0px));top:calc(64px + env(safe-area-inset-top,0px));bottom:calc(64px + env(safe-area-inset-bottom,0px));
+  width:clamp(300px,32vw,400px);display:flex;flex-direction:column;overflow:hidden;z-index:22;animation:notes-in .16s ease-out}
+@keyframes notes-in{from{opacity:0;transform:translateX(14px)}}
+.notes-head{flex:none;display:flex;align-items:center;justify-content:space-between;padding:6px 6px 0 18px}
+.notes-kicker{font-size:11.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.notes-body{flex:1;min-height:0;display:flex;flex-direction:column}
+.notes-path{flex:none;display:flex;flex-wrap:wrap;align-items:center;padding:0 14px;font-size:12.5px;color:var(--muted)}
+.notes-path:empty{display:none}
+.notes-path button{border:none;background:none;padding:2px 4px;border-radius:5px;color:inherit;font-size:inherit;cursor:pointer;
+  max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.notes-path button:hover{background:var(--surface-2);color:var(--ink)}
+.notes-path .gt{opacity:.55;padding:0 1px}
+.notes textarea{display:block;border:none;background:transparent;color:var(--ink);resize:none;outline:none;user-select:text;-webkit-user-select:text}
+.notes textarea::placeholder{color:var(--muted);opacity:.85}
+.notes .notes-title{flex:none;margin:6px 18px 0;padding:2px 6px 2px 12px;border-left:4px solid var(--c,var(--accent));border-radius:0 7px 7px 0;
+  font-family:var(--font-display);font-size:21px;font-weight:700;letter-spacing:-.01em;line-height:1.25;overflow:hidden}
+.notes .notes-title:not([readonly]):hover,.notes .notes-title:focus{background:var(--surface-2)}
+.notes .notes-text{flex:1;min-height:0;width:100%;margin-top:14px;padding:14px 18px 18px;border-top:1px solid var(--line);
+  font:inherit;font-size:14.5px;line-height:1.6}
+.notes-foot{flex:none;padding:8px 18px 11px;border-top:1px solid var(--line);font-size:12px;line-height:1.4;color:var(--muted)}
+.notes-empty{margin:0;padding:10px 18px 22px;color:var(--muted);font-size:14px;line-height:1.5}
+@media (max-width:640px){
+  .notes{top:auto;left:calc(12px + env(safe-area-inset-left,0px));right:calc(12px + env(safe-area-inset-right,0px));width:auto;
+    bottom:calc(12px + env(safe-area-inset-bottom,0px) + var(--kb,0px));height:min(58vh,calc(var(--vvh,100vh) - 110px));animation-name:notes-up}
+  @keyframes notes-up{from{opacity:0;transform:translateY(16px)}}
+}
+@media (prefers-reduced-motion: reduce){.notes{animation:none}}
 
 /* ---- login page ---- */
 body.login-page{overflow:auto;display:grid;place-items:center;min-height:100%;padding-block:24px}

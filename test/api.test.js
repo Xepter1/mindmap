@@ -5,7 +5,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createApp } from '../server/app.js';
-import { FORMAT } from '../public/shared/model.js';
+import { FORMAT, LIMITS } from '../public/shared/model.js';
 
 const quiet = { info() {}, error() {}, warn() {}, log() {} };
 
@@ -174,5 +174,26 @@ test('hand-placed branch positions (dx/dy, since 1.1.0) are stored', async () =>
   assert.equal(b.data.items.k.dx, 120.5);
   assert.equal(b.data.items.k.dy, -40);
   assert.equal(b.data.items.r.dx, undefined, 'root nodes are placed by x/y, not dx');
+  await s.app.close();
+});
+
+test('notes on mindmap topics (since 1.2.0) are stored, blank ones dropped', async () => {
+  const dir = await tmp();
+  let s = await start(dir);
+  const { data } = await s.call('POST', '/api/boards', { name: 'Notizen' });
+  const steps = '1. Wachsmodell spritzen\n2. Modelltraube aufbauen\n3. Keramikschale';
+  await s.call('POST', `/api/boards/${data.id}/changes`, { changes: [
+    { id: 'r', data: { type: 'node', parent: null, order: 1, text: 'Gießen', x: 0, y: 0 } },
+    { id: 'k', data: { type: 'node', parent: 'r', order: 1, text: 'Feinguss', note: steps } },
+    { id: 'e', data: { type: 'node', parent: 'r', order: 2, text: 'Leer', note: ' \n ' } },
+    { id: 'l', data: { type: 'node', parent: 'r', order: 3, text: 'Lang', note: 'x'.repeat(LIMITS.noteLength + 10) } },
+  ] });
+  await s.app.close();
+  s = await start(dir);
+  const b = await s.call('GET', `/api/boards/${data.id}`);
+  assert.equal(b.data.items.k.note, steps);
+  assert.equal('note' in b.data.items.e, false, 'blank notes are not stored');
+  assert.equal(b.data.items.l.note.length, LIMITS.noteLength);
+  assert.equal('note' in b.data.items.r, false);
   await s.app.close();
 });

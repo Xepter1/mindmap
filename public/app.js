@@ -1,5 +1,5 @@
 // Ideenraum – browser app. Talks to the server (see /server) through /api.
-import { uid, sanitizeItem, remapItems, TYPES, FORMAT } from './shared/model.js';
+import { uid, sanitizeItem, remapItems, TYPES, FORMAT, LIMITS } from './shared/model.js';
 
 /* ================= basics ================= */
 const $ = s => document.querySelector(s);
@@ -59,11 +59,11 @@ function applyPatch(patch, useBefore) {
   }
 }
 function undo() {
-  finishEdit(); const p = undoStack.pop(); if (!p) return;
+  finishEdit(); leaveNotesField(); const p = undoStack.pop(); if (!p) return;
   applyPatch(p, true); redoStack.push(p); commit({ noHistory: true }); afterHistory(p);
 }
 function redo() {
-  finishEdit(); const p = redoStack.pop(); if (!p) return;
+  finishEdit(); leaveNotesField(); const p = redoStack.pop(); if (!p) return;
   applyPatch(p, false); undoStack.push(p); commit({ noHistory: true }); afterHistory(p);
 }
 function afterHistory(p) {
@@ -391,7 +391,7 @@ const s2w = (x, y) => ({ x: (x - S.cam.x) / S.cam.z, y: (y - S.cam.y) / S.cam.z 
 function render() { if (!rafId) rafId = requestAnimationFrame(draw); }
 function draw() {
   rafId = 0;
-  computeTree(); syncItems(); measure(); layoutAll(dragView); placeItems(); drawWires(); drawOverlay(); updateCtx();
+  computeTree(); syncItems(); measure(); layoutAll(dragView); placeItems(); drawWires(); drawOverlay(); updateCtx(); syncNotes();
 }
 function syncItems() {
   for (const id in els) if (!S.items[id] || S.items[id].type === 'link' || els[id]._type !== S.items[id].type) { els[id].remove(); delete els[id]; }
@@ -428,6 +428,14 @@ function updateEl(el, n) {
   if (el._hidden !== hidden) { el.style.display = hidden ? 'none' : ''; el._hidden = hidden; }
   const c = n.type === 'node' ? ((m && m.color) || '#8790A3') : (n.color || '');
   if (el._c !== c) { if (c) el.style.setProperty('--c', c); else el.style.removeProperty('--c'); el._c = c; }
+  if (n.type === 'node') { // small badge on topics that have notes; a click on it opens them
+    const has = hasNote(n);
+    if (has && !el._nb) {
+      const b = document.createElement('span');
+      b.className = 'note-badge'; b.dataset.note = n.id; b.title = 'Notizen anzeigen'; b.innerHTML = NOTE_ICON;
+      el.appendChild(b); el._nb = b;
+    } else if (!has && el._nb) { el._nb.remove(); el._nb = null; }
+  }
   if (el._tx) {
     if (!editing && el._t !== (n.text || '')) { el._tx.textContent = n.text || ''; el._t = n.text || ''; el._fit = null; }
     const ph = n.type === 'node' ? (m && m.depth === 0 ? 'Hauptthema' : 'Thema') : n.type === 'text' ? 'Text' : '';
@@ -673,13 +681,39 @@ function navigate(id, key) {
   }
   if (t) { S.sel = new Set([t.id]); render(); requestAnimationFrame(() => ensureVisible(t.id)); }
 }
-function ensureVisible(id) {
+function ensureVisible(id, smooth) {
   const r = L[id]; if (!r) return;
-  const p = w2s(r.x, r.y), W = r.w * S.cam.z, H = r.h * S.cam.z, m = 80;
+  const a = viewArea(), p = w2s(r.x, r.y), W = r.w * S.cam.z, H = r.h * S.cam.z;
+  const mx = clamp((a.x1 - a.x0 - W) / 2, 0, 80), my = clamp((a.y1 - a.y0 - H) / 2, 0, 80);
   let dx = 0, dy = 0;
-  if (p.x < m) dx = m - p.x; else if (p.x + W > innerWidth - m) dx = innerWidth - m - p.x - W;
-  if (p.y < m) dy = m - p.y; else if (p.y + H > innerHeight - m) dy = innerHeight - m - p.y - H;
-  if (dx || dy) { S.cam.x += dx; S.cam.y += dy; applyCam(); }
+  if (p.x < a.x0 + mx) dx = a.x0 + mx - p.x; else if (p.x + W > a.x1 - mx) dx = a.x1 - mx - p.x - W;
+  if (p.y < a.y0 + my) dy = a.y0 + my - p.y; else if (p.y + H > a.y1 - my) dy = a.y1 - my - p.y - H;
+  if (!dx && !dy) return;
+  const to = { x: S.cam.x + dx, y: S.cam.y + dy, z: S.cam.z };
+  if (smooth) animateCam(to); else { S.cam = to; applyCam(); }
+}
+/** The part of the screen that is not covered by the notes panel. */
+function viewArea() {
+  const a = { x0: 0, y0: 0, x1: innerWidth, y1: innerHeight }, r = notes.open && notes.rect;
+  if (r) { if (r.top > innerHeight * 0.3) a.y1 = r.top; else a.x1 = r.left; } // bottom sheet on phones, side panel otherwise
+  return a;
+}
+let camAnim = 0;
+function animateCam(to, ms = 260) {
+  cancelAnimationFrame(camAnim);
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) { S.cam = to; applyCam(); return; }
+  const from = Object.assign({}, S.cam), t0 = performance.now();
+  let last = from;
+  const step = now => {
+    // someone panned or zoomed in the meantime: stop here and leave the camera to them
+    if (S.cam.x !== last.x || S.cam.y !== last.y || S.cam.z !== last.z) { camAnim = 0; return; }
+    const k = Math.min(1, (now - t0) / ms), e = 1 - Math.pow(1 - k, 3);
+    last = { x: from.x + (to.x - from.x) * e, y: from.y + (to.y - from.y) * e, z: from.z + (to.z - from.z) * e };
+    S.cam = Object.assign({}, last);
+    applyCam();
+    camAnim = k < 1 ? requestAnimationFrame(step) : 0;
+  };
+  camAnim = requestAnimationFrame(step);
 }
 function hasSelectedAncestor(n) {
   let c = n, guard = 0;
@@ -712,10 +746,10 @@ const zoomBy = f => zoomAt(innerWidth / 2, innerHeight / 2, f);
 function zoomTo(z) { zoomBy(z / S.cam.z); }
 function fitAll() {
   computeTree(); layoutAll();
-  const b = contentBounds();
-  if (!b) { S.cam = { x: innerWidth / 2, y: innerHeight / 2, z: 1 }; applyCam(); return; }
-  const z = clamp(Math.min((innerWidth - 180) / b.w, (innerHeight - 180) / b.h), 0.1, 1.25);
-  S.cam = { z, x: innerWidth / 2 - (b.x + b.w / 2) * z, y: innerHeight / 2 - (b.y + b.h / 2) * z };
+  const b = contentBounds(), a = viewArea(), cx = (a.x0 + a.x1) / 2, cy = (a.y0 + a.y1) / 2;
+  if (!b) { S.cam = { x: cx, y: cy, z: 1 }; applyCam(); return; }
+  const z = clamp(Math.min((a.x1 - a.x0 - 180) / b.w, (a.y1 - a.y0 - 180) / b.h), 0.1, 1.25);
+  S.cam = { z, x: cx - (b.x + b.w / 2) * z, y: cy - (b.y + b.h / 2) * z };
   applyCam(); render();
 }
 
@@ -854,6 +888,7 @@ function updatePinch() {
 stage.addEventListener('contextmenu', e => e.preventDefault());
 stage.addEventListener('pointerdown', e => {
   closeMenus();
+  lastPointer = e.pointerType; cancelAnimationFrame(camAnim);
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (pointers.size === 2) { startPinch(); return; }
   if (pointers.size > 2) return;
@@ -870,6 +905,13 @@ stage.addEventListener('pointerdown', e => {
   const sx = e.clientX, sy = e.clientY, pt = s2w(sx, sy);
   const hEl = e.target.closest('[data-h]'), tog = e.target.closest('[data-toggle]'), itEl = e.target.closest('[data-id]');
   if (tog) { e.preventDefault(); toggleCollapse(tog.dataset.toggle); return; }
+  const nb = e.target.closest('[data-note]');
+  if (nb && S.items[nb.dataset.note] && S.tool === 'select') {
+    e.preventDefault();
+    const id = nb.dataset.note;
+    if (notes.open && notes.id === id) closeNotes(); else openNotes(id);
+    return;
+  }
   if (hEl) { e.preventDefault(); onHandleDown(hEl.dataset.h, e, pt); return; }
   if (e.pointerType === 'touch' && !itEl && S.tool === 'select') { startPan(e); return; }
   if (!S.readOnly) {
@@ -1057,16 +1099,25 @@ function endGesture(e) {
 window.addEventListener('pointerup', endGesture);
 window.addEventListener('pointercancel', endGesture);
 stage.addEventListener('wheel', e => {
-  e.preventDefault();
+  e.preventDefault(); cancelAnimationFrame(camAnim);
   const k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1;
   if (e.ctrlKey || e.metaKey) zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * k * 0.0105));
   else { S.cam.x -= e.deltaX * k; S.cam.y -= e.deltaY * k; applyCam(); }
 }, { passive: false });
 stage.addEventListener('dblclick', e => {
-  if (S.readOnly || e.target.closest('[data-h],[data-toggle]')) return;
-  const itEl = e.target.closest('[data-id]');
-  if (itEl) { const id = itEl.dataset.id; if (S.items[id] && S.editing !== id) startEdit(id, { selectAll: true }); return; }
-  if (S.tool === 'select') createAt('node', s2w(e.clientX, e.clientY));
+  // what is under the pointer: with pointer capture the event itself may be aimed at the stage
+  const t = document.elementFromPoint(e.clientX, e.clientY) || e.target;
+  if (!stage.contains(t) || t.closest('[data-h],[data-toggle],[data-note]')) return;
+  const itEl = t.closest('[data-id]');
+  if (itEl) {
+    const id = itEl.dataset.id, n = S.items[id];
+    if (!n || S.editing === id) return;
+    // a topic opens its notes (its text: F2, typing, or the title in the panel); other items edit their text
+    if (n.type === 'node') openNotes(id, { focus: lastPointer !== 'touch' && !hasNote(n) });
+    else if (!S.readOnly) startEdit(id, { selectAll: true });
+    return;
+  }
+  if (!S.readOnly && S.tool === 'select') createAt('node', s2w(e.clientX, e.clientY));
 });
 
 /* ================= text editing ================= */
@@ -1147,11 +1198,16 @@ window.addEventListener('keydown', e => {
   if (S.editing) {
     const n = S.items[S.editing]; if (!n || n.type === 'link') return;
     if (k === 'Escape') { e.preventDefault(); finishEdit('escape'); return; }
+    if (k === 'Enter' && mod && n.type === 'node') { e.preventDefault(); const id = n.id; finishEdit(); if (S.items[id]) openNotes(id, { focus: 'end' }); return; }
     if (k === 'Enter' && !e.shiftKey && !e.isComposing && (n.type === 'node' || mod)) { e.preventDefault(); finishEdit(); return; }
     if (k === 'Tab' && n.type === 'node') { e.preventDefault(); const id = n.id; finishEdit(); if (S.items[id]) addChild(id); return; }
     return;
   }
   if (inField(e.target)) return;
+  if (e.target.closest && e.target.closest('#notes')) { // a button in the notes panel has the focus
+    if (k === 'Escape') { closeNotes(); stage.focus({ preventScroll: true }); }
+    return;
+  }
   if (k === ' ') { e.preventDefault(); if (!spaceDown) { spaceDown = true; stage.classList.add('panning'); } return; }
   const lower = k.length === 1 ? k.toLowerCase() : k;
   if (mod) {
@@ -1164,6 +1220,11 @@ window.addEventListener('keydown', e => {
     else if (k === '0') { e.preventDefault(); zoomTo(1); }
     else if (lower === 'c' || lower === 'x') { clip = copyData(); pasteN = 0; if (lower === 'x' && clip) setTimeout(deleteSelection, 0); }
     else if (lower === 'v') { pasteSeen = false; setTimeout(() => { if (!pasteSeen && clip) pasteData(clip); }, 80); }
+    else if (k === 'Enter') { // ⌘ Enter: write notes for the selected topic
+      e.preventDefault();
+      const one = S.sel.size === 1 ? S.items[[...S.sel][0]] : null;
+      if (isNode(one)) openNotes(one.id, { focus: 'end' }); else if (notes.open) closeNotes();
+    }
     return;
   }
   if (e.shiftKey && e.code === 'Digit1') { e.preventDefault(); fitAll(); return; }
@@ -1172,6 +1233,7 @@ window.addEventListener('keydown', e => {
     if (closeMenus()) return;
     if (gesture) { cancelGesture(); return; }
     if (S.tool !== 'select') { setTool('select'); return; }
+    if (notes.open) { closeNotes(); return; }
     S.sel.clear(); render(); return;
   }
   if (k === '?') { e.preventDefault(); toggleHelp(); return; }
@@ -1247,6 +1309,7 @@ const IC = {
   ellipse: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="12" rx="8.5" ry="6.5"/></svg>',
   diamond: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3.5 20.5 12 12 20.5 3.5 12Z"/></svg>',
   relayout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 4.5v4h4"/></svg>',
+  notes: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>',
 };
 const hasOffsets = ids => ids.some(id => S.items[id] && S.items[id].type === 'node' && subtreeIds(id).some(x => S.items[x] && (S.items[x].dx || S.items[x].dy)));
 const swatch = (c, on, act, title) => `<button class="sw${on ? ' on' : ''}" style="--c:${c}" data-act="${act}" title="${title || ''}" aria-label="${title || 'Farbe'}"></button>`;
@@ -1259,7 +1322,7 @@ function updateCtx() {
   const items = ids.map(id => S.items[id]), types = new Set(items.map(n => n.type));
   const one = items.length === 1 ? items[0] : null, t = types.size === 1 ? items[0].type : 'mixed';
   const moved = t === 'node' && hasOffsets(ids);
-  const key = ids.join(',') + '|' + items.map(n => [n.color, n.shape, n.arrow, n.style, n.dash, n.size, n.collapsed].join(':')).join(';') + (one && M[one.id] ? M[one.id].kids.length + ':' + M[one.id].depth : '') + (moved ? '|moved' : '');
+  const key = ids.join(',') + '|' + items.map(n => [n.color, n.shape, n.arrow, n.style, n.dash, n.size, n.collapsed].join(':')).join(';') + (one && M[one.id] ? M[one.id].kids.length + ':' + M[one.id].depth : '') + (moved ? '|moved' : '') + (notes.open ? '|notes' : '');
   if (key !== ctxKey) {
     ctxKey = key; let h = '';
     if (t === 'node') {
@@ -1269,6 +1332,7 @@ function updateCtx() {
       if (one) {
         h += '<div class="sep"></div>' + ibtn('child', 'child', 'Unterthema hinzufügen (Tab)');
         if (M[one.id] && M[one.id].kids.length) h += ibtn('fold', one.collapsed ? 'unfold' : 'fold', one.collapsed ? 'Aufklappen' : 'Zuklappen');
+        h += ibtn('notes', 'notes', notes.open ? 'Notizen schließen' : 'Notizen (Doppelklick)', notes.open);
       }
       if (moved) h += (one ? '' : '<div class="sep"></div>') + ibtn('relayout', 'relayout', 'Anordnung zurücksetzen');
     } else if (t === 'sticky' || t === 'shape') {
@@ -1295,12 +1359,12 @@ function updateCtx() {
   }
   if (ctx.hidden) ctx.hidden = false;
   let b = selBounds(ids); if (!b) { ctx.hidden = true; return; }
-  const p1 = w2s(b.x, b.y), p2 = w2s(b.x + b.w, b.y + b.h);
+  const p1 = w2s(b.x, b.y), p2 = w2s(b.x + b.w, b.y + b.h), a = viewArea();
   const cw = ctx.offsetWidth, ch = ctx.offsetHeight;
   let x = (p1.x + p2.x) / 2 - cw / 2, y = p1.y - ch - 46;
   if (y < 70) y = p2.y + 46;
-  if (y + ch > innerHeight - 70) y = Math.max(70, p1.y - ch - 46);
-  ctx.style.left = clamp(x, 12, innerWidth - cw - 12) + 'px'; ctx.style.top = clamp(y, 64, innerHeight - ch - 12) + 'px';
+  if (y + ch > a.y1 - 70) y = Math.max(70, p1.y - ch - 46);
+  ctx.style.left = clamp(x, 12, a.x1 - cw - 12) + 'px'; ctx.style.top = clamp(y, 64, a.y1 - ch - 12) + 'px';
 }
 ctx.addEventListener('pointerdown', e => e.stopPropagation());
 ctx.addEventListener('click', e => {
@@ -1315,6 +1379,7 @@ ctx.addEventListener('click', e => {
   else if (act === 'label') { editLabel(ids[0]); return; }
   else if (act === 'child') { addChild(ids[0]); return; }
   else if (act === 'fold') { toggleCollapse(ids[0]); return; }
+  else if (act === 'notes') { if (notes.open) closeNotes(); else openNotes(ids[0], { focus: lastPointer !== 'touch' }); return; }
   else if (act === 'relayout') { for (const id of ids) for (const x of subtreeIds(id)) { const n = S.items[x]; if (n) { delete n.dx; delete n.dy; } } }
   else if (act === 'front') { let z = maxZ(); for (const n of items) n.z = ++z; }
   else if (act === 'delete') { deleteSelection(); return; }
@@ -1345,6 +1410,170 @@ flyout.addEventListener('click', e => {
   openFlyout(S.tool);
 });
 
+/* ================= notes panel ================= */
+// Notes belong to mindmap topics (field `note`). The panel shows the notes of the
+// selected topic and follows the selection while it is open, so a click on another
+// topic shows that topic's notes. Changes are saved a moment after typing stops.
+const notesEl = $('#notes'), notesTitle = $('#notesTitle'), notesText = $('#notesText'), notesPath = $('#notesPath'),
+      notesBody = $('#notesBody'), notesEmpty = $('#notesEmpty'), notesFoot = $('#notesFoot');
+const NOTE_ICON = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 3.5h6M3 6h6M3 8.5h3.5"/></svg>';
+const notes = { open: false, id: null, dirty: false, touched: false, timer: 0, since: 0, rect: null, pathKey: '', color: '' };
+let lastPointer = 'mouse';
+notesText.maxLength = LIMITS.noteLength;
+notesTitle.maxLength = LIMITS.textLength;
+function hasNote(n) { return !!(n && typeof n.note === 'string' && n.note.trim()); }
+const shortText = s => { const t = String(s || '').split('\n')[0].trim(); return t.length > 40 ? t.slice(0, 38) + '…' : t; };
+function notesTarget() {
+  if (S.sel.size !== 1) return null;
+  const id = [...S.sel][0], n = S.items[id];
+  return isNode(n) && !(M[id] && M[id].hidden) ? id : null;
+}
+/** While someone types in the panel, changes from other devices must not overwrite the topic. */
+function notesBusy(id) { return notes.open && notes.id === id && (notes.dirty || notesEl.contains(document.activeElement)); }
+function measureNotes() {
+  const el = notesEl;
+  notes.rect = notes.open && !el.hidden ? { left: el.offsetLeft, top: el.offsetTop, width: el.offsetWidth, height: el.offsetHeight } : null;
+  if (notes.rect && !notesBody.hidden) fitNotesTitle();
+}
+function openNotes(id, opts = {}) {
+  if (id && S.items[id]) S.sel = new Set([id]);
+  notes.open = true; notesEl.hidden = false; measureNotes();
+  draw(); // fill the panel now, so the topic can be moved out from under it
+  const t = notesTarget();
+  if (t) ensureVisible(t, true);
+  if (opts.focus && t && !S.readOnly) {
+    notesText.focus({ preventScroll: true });
+    if (opts.focus === 'end') { const end = notesText.value.length; notesText.setSelectionRange(end, end); }
+  }
+}
+function closeNotes() {
+  if (!notes.open) return;
+  leaveNotesField(); flushNotes(true);
+  notes.open = false; notes.id = null; notes.rect = null; notesEl.hidden = true;
+  render();
+}
+function leaveNotesField() { if (notesEl.contains(document.activeElement)) stage.focus({ preventScroll: true }); }
+function noteEdited() {
+  notes.dirty = notes.touched = true;
+  clearTimeout(notes.timer);
+  const now = Date.now(); if (!notes.since) notes.since = now;
+  // save 0.7 s after the last key, and at least every 4 s while typing
+  notes.timer = setTimeout(() => flushNotes(false), Math.max(0, Math.min(700, notes.since + 4000 - now)));
+}
+function flushNotes(final) {
+  clearTimeout(notes.timer); notes.timer = 0; notes.since = 0;
+  const n = notes.id ? S.items[notes.id] : null;
+  let changed = notes.dirty; notes.dirty = false;
+  if (n && final && notes.touched) { // leaving the field: drop trailing blank lines
+    notes.touched = false;
+    if (typeof n.note === 'string') {
+      const v = n.note.replace(/\s+$/, '');
+      if (v !== n.note || !v) { changed = true; if (v) n.note = v; else delete n.note; }
+    }
+    const t = (n.text || '').replace(/\s+$/, '');
+    if (t !== (n.text || '')) { n.text = t; changed = true; }
+  }
+  if (changed) commit();
+}
+function fitNotesTitle() { notesTitle.style.height = 'auto'; notesTitle.style.height = notesTitle.scrollHeight + 'px'; }
+function updateNotesFoot() {
+  const len = notesText.value.length, max = LIMITS.noteLength;
+  let msg = '';
+  if (S.readOnly) msg = '';
+  else if (len >= max) msg = `Die Notiz ist voll (${max.toLocaleString('de-DE')} Zeichen).`;
+  else if (len > max * 0.9) msg = `Noch ${(max - len).toLocaleString('de-DE')} Zeichen frei.`;
+  else if (!notesText.value.trim()) msg = 'Tipp: Mit „1.“ oder „-“ anfangen, Enter setzt die Liste fort.';
+  if (notesFoot.textContent !== msg) notesFoot.textContent = msg;
+  notesFoot.hidden = !msg;
+}
+/** Bring the panel in line with the selection and the data (called on every redraw). */
+function syncNotes() {
+  if (!notes.open) return;
+  const id = notesTarget();
+  let fresh = false;
+  if (id !== notes.id) { flushNotes(true); notes.id = id; notes.touched = false; fresh = true; }
+  if (notesBody.hidden !== !id) notesBody.hidden = !id;
+  if (notesEmpty.hidden !== !!id) notesEmpty.hidden = !!id;
+  if (!id) return;
+  const n = S.items[id], m = M[id], focus = document.activeElement;
+  const c = (m && m.color) || 'var(--root-bg)';
+  if (notes.color !== c) { notesEl.style.setProperty('--c', c); notes.color = c; }
+  notesTitle.readOnly = notesText.readOnly = S.readOnly;
+  if ((fresh || focus !== notesTitle) && notesTitle.value !== (n.text || '')) { notesTitle.value = n.text || ''; fitNotesTitle(); }
+  else if (fresh) fitNotesTitle();
+  if ((fresh || focus !== notesText) && notesText.value !== (n.note || '')) {
+    notesText.value = n.note || '';
+    if (fresh) { notesText.setSelectionRange(0, 0); notesText.scrollTop = 0; }
+  }
+  if (fresh) {
+    notesTitle.placeholder = m && m.depth === 0 ? 'Hauptthema' : 'Thema';
+    notesText.placeholder = S.readOnly ? 'Keine Notizen.' : `Notizen zu „${shortText(n.text) || 'diesem Thema'}“ …`;
+  }
+  // the topics above this one; a click on one jumps there
+  const chain = [], seen = new Set([id]);
+  for (let p = S.items[n.parent]; isNode(p) && !seen.has(p.id); p = S.items[p.parent]) { seen.add(p.id); chain.unshift(p); }
+  const key = chain.map(a => a.id + ':' + (a.text || '')).join('|');
+  if (key !== notes.pathKey) {
+    notes.pathKey = key;
+    notesPath.innerHTML = chain.map(a => `<button type="button" data-go="${a.id}" title="${esc(a.text || 'Thema')}">${esc(shortText(a.text) || (isRootNode(a) ? 'Hauptthema' : 'Thema'))}</button>`)
+      .join('<span class="gt" aria-hidden="true">›</span>');
+  }
+  updateNotesFoot();
+}
+/** Enter in a list line ("1. …", "- …") starts the next item; on an empty item it ends the list. */
+function continueList(e) {
+  const t = notesText, pos = t.selectionStart;
+  if (pos !== t.selectionEnd || S.readOnly) return;
+  const start = t.value.lastIndexOf('\n', pos - 1) + 1, line = t.value.slice(start, pos);
+  const m = line.match(/^(\s*)(?:(\d{1,3})([.)])|([-–•*]))\s+/);
+  if (!m) return;
+  e.preventDefault();
+  if (!line.slice(m[0].length).trim()) { t.setSelectionRange(start, pos); insertNoteText(''); return; }
+  insertNoteText('\n' + m[1] + (m[2] ? (Number(m[2]) + 1) + m[3] : m[4]) + ' ');
+}
+function insertNoteText(s) {
+  // execCommand keeps the browser's own undo (⌘Z) working inside the field
+  if (!document.execCommand(s ? 'insertText' : 'delete', false, s)) {
+    notesText.setRangeText(s, notesText.selectionStart, notesText.selectionEnd, 'end');
+    notesText.dispatchEvent(new Event('input'));
+  }
+}
+notesTitle.addEventListener('input', () => {
+  const n = S.items[notes.id]; if (!n || S.readOnly) return;
+  n.text = notesTitle.value.replace(/\r/g, '').slice(0, LIMITS.textLength);
+  fitNotesTitle(); noteEdited(); render();
+});
+notesText.addEventListener('input', () => {
+  const n = S.items[notes.id]; if (!n || S.readOnly) return;
+  const had = hasNote(n);
+  if (notesText.value) n.note = notesText.value; else delete n.note;
+  noteEdited(); updateNotesFoot();
+  if (had !== hasNote(n)) render(); // the badge on the topic appears or goes away
+});
+for (const f of [notesTitle, notesText]) f.addEventListener('blur', () => flushNotes(true));
+notesTitle.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { e.preventDefault(); leaveNotesField(); }
+  else if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (e.metaKey || e.ctrlKey) leaveNotesField(); else notesText.focus(); }
+});
+notesText.addEventListener('keydown', e => {
+  if (e.key === 'Escape' || (e.key === 'Enter' && (e.metaKey || e.ctrlKey))) { e.preventDefault(); leaveNotesField(); return; }
+  if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !e.isComposing) continueList(e);
+});
+notesPath.addEventListener('click', e => {
+  const b = e.target.closest('[data-go]'), id = b && b.dataset.go; if (!id || !S.items[id]) return;
+  S.sel = new Set([id]); stage.focus({ preventScroll: true }); draw(); ensureVisible(id, true);
+});
+$('#notesClose').addEventListener('click', () => { closeNotes(); stage.focus({ preventScroll: true }); });
+if (window.visualViewport) { // phones: keep the bottom sheet above the on-screen keyboard
+  const vv = window.visualViewport, root = document.documentElement;
+  const onViewport = () => {
+    root.style.setProperty('--vvh', Math.round(vv.height) + 'px');
+    root.style.setProperty('--kb', Math.max(0, Math.round(innerHeight - vv.height - vv.offsetTop)) + 'px');
+    if (notes.open) measureNotes();
+  };
+  vv.addEventListener('resize', onViewport); vv.addEventListener('scroll', onViewport); onViewport();
+}
+
 /* ================= boards ================= */
 let loadSeq = 0, foreign = {};
 const recentlyCreated = new Map();
@@ -1366,14 +1595,17 @@ function clearCanvas() {
   for (const id in els) { els[id].remove(); delete els[id]; }
   for (const k in SZ) delete SZ[k];
   S.items = {}; base = {}; foreign = {}; S.sel = new Set(); S.editing = null; gesture = null; dragView = null; dropHint = null; marquee = null;
+  notes.id = null; notes.dirty = false;
   resetHistory();
 }
 function closeBoard() {
+  flushNotes(true);
   S.boardId = null; loadSeq++; clearCanvas(); render(); updateBoardName();
   if (boards.length) openBoard(boards[0].id); else $('#empty').hidden = false;
 }
 async function openBoard(id, opts = {}) {
   if (S.editing) finishEdit();
+  leaveNotesField(); flushNotes(true);
   const seq = ++loadSeq;
   clearCanvas();
   S.boardId = id; lsSet('last', id);
@@ -1401,7 +1633,7 @@ async function openBoard(id, opts = {}) {
 function onRemote(type, id, data) {
   if (!S.boardId || id.startsWith('__')) return;
   if (Server.isPending(S.boardId, id)) return;
-  if (S.editing === id || (gesture && S.sel.has(id))) return;
+  if (S.editing === id || (gesture && S.sel.has(id)) || notesBusy(id)) return;
   const v = data ? sanitize(Object.assign({}, data, { id })) : null;
   if (v && !TYPES.includes(v.type)) { foreign[id] = data; return; }
   const js = v ? JSON.stringify(v) : null;
@@ -1730,7 +1962,7 @@ $('#boardBtn').addEventListener('dblclick', startRename);
 $('#exportBtn').addEventListener('click', e => openMenu('#exportMenu', e.currentTarget, true));
 $('#emptyNew').addEventListener('click', newBlankBoard);
 $('#emptySample').addEventListener('click', () => createBoard(nextName('Beispiel: Sommerfest'), sampleItems()));
-addEventListener('resize', () => { applyCam(); render(); });
+addEventListener('resize', () => { measureNotes(); applyCam(); render(); });
 addEventListener('beforeunload', e => {
   if (Server.pending()) { Server.flush(); e.preventDefault(); e.returnValue = ''; }
 });

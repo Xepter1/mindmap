@@ -2,6 +2,17 @@
 
 Versionsnummern folgen dem Schema `Major.Minor.Patch`. Ändert sich das Datenformat, steht es hier dabei.
 
+## 1.2.0 – 2026-11-24
+
+Datenformat bleibt 1. Neu ist nur das optionale Feld `note` an Mindmap-Knoten, alte Boards funktionieren unverändert.
+
+- Notizen zu jedem Thema: Ein Doppelklick auf ein Thema öffnet rechts ein Notizfeld, etwa für einen Verfahrensablauf. Auf dem Handy erscheint es unten.
+- Das Notizfeld folgt der Auswahl. Ein Klick auf ein anderes Thema zeigt dessen Notizen, oben steht der Pfad dorthin.
+- Themen mit Notizen tragen ein kleines Symbol. Ein Klick darauf öffnet die Notizen.
+- Listen mit „1.“ oder „-“ setzt `Enter` von selbst fort.
+- `⌘ Enter` (Windows: `Strg Enter`) springt zwischen Mindmap und Notizen hin und her.
+- Geändert: Den Text eines Themas bearbeitest du jetzt mit `F2`, durch Lostippen oder oben im Notizfeld, weil der Doppelklick die Notizen öffnet. Bei Haftnotizen, Formen und Text bleibt der Doppelklick wie bisher.
+
 ## 1.1.0 – 2026-11-23
 
 Datenformat bleibt 1. Neu ist nur das optionale Feld `dx`/`dy` an Mindmap-Knoten, alte Boards funktionieren unverändert.
