@@ -2,11 +2,13 @@
 // Files are written atomically (temp file + fsync + rename), so a power cut
 // on the Raspberry Pi leaves either the old or the new version, never half a file.
 
+import crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { FORMAT, ID_RE, LIMITS, boardFormat, migrateBoard, remapItems, sanitizeItem, uid, validateItem, APP_ID } from '../public/shared/model.js';
+import { FORMAT, ID_RE, IMAGE_RE, LIMITS, boardFormat, imageIds, migrateBoard, remapItems, sanitizeItem, uid, validateItem, APP_ID } from '../public/shared/model.js';
 
 const DAY = 24 * 60 * 60 * 1000;
+const IMAGE_GRACE_DAYS = 7; // unused pictures stay this long after their upload
 const stamp = (d = new Date()) => d.toISOString().replace(/[:.]/g, '-');
 
 async function readJson(file) {
@@ -14,7 +16,7 @@ async function readJson(file) {
   catch (e) { if (e.code === 'ENOENT') return null; throw e; }
 }
 async function writeAtomic(file, text) {
-  const tmp = `${file}.${process.pid}.tmp`;
+  const tmp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
   const fh = await fs.open(tmp, 'w');
   try { await fh.writeFile(text); await fh.sync(); } finally { await fh.close(); }
   await fs.rename(tmp, file);
@@ -24,12 +26,24 @@ export class StoreError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
 
+/** File type from the first bytes. Only formats every browser can show are accepted. */
+export function sniffImage(b) {
+  if (!Buffer.isBuffer(b) || b.length < 12) return null;
+  if (b[0] === 0x89 && b.toString('latin1', 1, 8) === 'PNG\r\n\x1a\n') return 'png';
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'jpg';
+  if (/^GIF8[79]a$/.test(b.toString('latin1', 0, 6))) return 'gif';
+  if (b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP') return 'webp';
+  return null;
+}
+
 export class Store {
   constructor(dataDir, { appVersion = '0.0.0', backupKeepDays = 14, trashKeepDays = 30, log = console } = {}) {
     this.dir = dataDir;
     this.boardsDir = path.join(dataDir, 'boards');
     this.backupDir = path.join(dataDir, 'backups');
     this.trashDir = path.join(dataDir, 'trash');
+    this.imagesDir = path.join(dataDir, 'images');
+    this.lastImageClean = 0;
     this.appVersion = appVersion;
     this.backupKeepDays = backupKeepDays;
     this.trashKeepDays = trashKeepDays;
@@ -43,7 +57,7 @@ export class Store {
 
   /* ---------- startup ---------- */
   async init() {
-    for (const d of [this.dir, this.boardsDir, this.backupDir, this.trashDir]) await fs.mkdir(d, { recursive: true });
+    for (const d of [this.dir, this.boardsDir, this.backupDir, this.trashDir, this.imagesDir]) await fs.mkdir(d, { recursive: true });
     try { await fs.access(this.dir, fs.constants.W_OK); }
     catch { throw new Error(`Kein Schreibzugriff auf ${this.dir}. Unter Docker: "sudo chown -R 1000:1000 data" im Projektordner ausführen.`); }
 
@@ -160,11 +174,23 @@ export class Store {
   exportAll() {
     return { app: APP_ID, kind: 'backup', format: FORMAT, appVersion: this.appVersion, exportedAt: new Date().toISOString(), boards: [...this.boards.values()] };
   }
-  importData(data) {
+  async importData(data) {
     if (!data || typeof data !== 'object') throw new StoreError(400, 'Keine gültige Datei');
+    const full = Array.isArray(data.boards);
+    if (!full && !Array.isArray(data.items)) throw new StoreError(400, 'Diese Datei ist kein Ideenraum-Export');
+    if (full && Number.isInteger(data.format) && data.format > FORMAT) throw new StoreError(400, 'Die Sicherung stammt von einer neueren Version');
+    // pictures first, so the boards never point at missing files
+    if (data.images && typeof data.images === 'object' && !Array.isArray(data.images)) {
+      for (const [id, b64] of Object.entries(data.images)) {
+        if (!IMAGE_RE.test(id) || typeof b64 !== 'string' || b64.length > LIMITS.imageBytes * 1.4) continue;
+        try {
+          const r = await this.saveImage(Buffer.from(b64, 'base64'));
+          if (r.id !== id) this.log.error(`Bild ${id} aus dem Import ist beschädigt und wurde unter ${r.id} gespeichert.`);
+        } catch (e) { this.log.error(`Bild ${id} aus dem Import übersprungen: ${e.message}`); }
+      }
+    }
     const created = [];
-    if (Array.isArray(data.boards)) { // full backup
-      if (Number.isInteger(data.format) && data.format > FORMAT) throw new StoreError(400, 'Die Sicherung stammt von einer neueren Version');
+    if (full) {
       for (const raw of data.boards) {
         if (!raw || typeof raw !== 'object') continue;
         const b = migrateBoard(JSON.parse(JSON.stringify(raw)));
@@ -172,10 +198,65 @@ export class Store {
         const items = keepIds ? Object.values(b.items) : remapItems(Object.values(b.items));
         created.push(this.create({ id: keepIds ? b.id : undefined, name: b.name, items }));
       }
-    } else if (Array.isArray(data.items)) { // single board export
+    } else { // single board export
       created.push(this.create({ name: typeof data.name === 'string' ? data.name : 'Importiertes Board', items: remapItems(data.items) }));
-    } else throw new StoreError(400, 'Diese Datei ist kein Ideenraum-Export');
+    }
     return created.map(b => ({ id: b.id, name: b.name, itemCount: Object.keys(b.items).length }));
+  }
+
+  /* ---------- pictures ---------- */
+  imageFile(id) {
+    if (!IMAGE_RE.test(id)) throw new StoreError(404, 'Bild nicht gefunden');
+    return path.join(this.imagesDir, id);
+  }
+  async saveImage(buf) {
+    const ext = sniffImage(buf);
+    if (!ext) throw new StoreError(415, 'Erlaubt sind Bilder als PNG, JPG, GIF oder WebP');
+    if (buf.length > LIMITS.imageBytes) throw new StoreError(413, 'Das Bild ist zu groß');
+    const id = `${crypto.createHash('sha256').update(buf).digest('hex').slice(0, 32)}.${ext}`;
+    const file = this.imageFile(id);
+    try {
+      const now = new Date();
+      await fs.utimes(file, now, now); // already there: counts as new again for the cleanup
+    } catch (e) {
+      if (e.code !== 'ENOENT') throw e;
+      await writeAtomic(file, buf);
+    }
+    return { id, size: buf.length };
+  }
+  /** Pictures used by the current boards that exist on disk (for the full backup). */
+  async boardImages() {
+    const out = [];
+    for (const id of [...imageIds([...this.boards.values()].map(b => b.items))].sort()) {
+      try { await fs.access(path.join(this.imagesDir, id)); out.push(id); } catch { /* missing file: nothing to export */ }
+    }
+    return out;
+  }
+  /** Delete pictures nobody needs: not in a board, the trash or a backup, and older than the grace period. */
+  async cleanImages(now = Date.now()) {
+    const used = imageIds([...this.boards.values()].map(b => b.items));
+    const scan = async dir => {
+      let names = [];
+      try { names = await fs.readdir(dir); } catch { return; }
+      for (const f of names) if (f.endsWith('.json')) {
+        try { imageIds(await fs.readFile(path.join(dir, f), 'utf8'), used); } catch { /* unreadable: ignore */ }
+      }
+    };
+    await scan(this.trashDir);
+    for (const d of await fs.readdir(this.backupDir, { withFileTypes: true })) if (d.isDirectory()) await scan(path.join(this.backupDir, d.name));
+    for (const f of await fs.readdir(this.dir)) if (f.startsWith('defekt-')) { try { imageIds(await fs.readFile(path.join(this.dir, f), 'utf8'), used); } catch { /* ignore */ } }
+    let removed = 0;
+    for (const f of await fs.readdir(this.imagesDir)) {
+      const file = path.join(this.imagesDir, f);
+      const tmp = f.endsWith('.tmp');
+      if (!tmp && (!IMAGE_RE.test(f) || used.has(f))) continue;
+      try {
+        const st = await fs.stat(file);
+        if (now - st.mtimeMs > (tmp ? DAY : IMAGE_GRACE_DAYS * DAY)) { await fs.rm(file, { force: true }); if (!tmp) removed++; }
+      } catch { /* gone in the meantime */ }
+    }
+    if (removed) this.log.info(`${removed} nicht mehr benutzte(s) Bild(er) gelöscht`);
+    return removed;
   }
 
   /* ---------- persistence ---------- */
@@ -230,6 +311,7 @@ export class Store {
       const st = await fs.stat(path.join(this.trashDir, f));
       if (now - st.mtimeMs > this.trashKeepDays * DAY) await fs.rm(path.join(this.trashDir, f), { force: true });
     }
+    if (now - this.lastImageClean > 12 * 60 * 60 * 1000) { this.lastImageClean = now; await this.cleanImages(now); }
   }
 
   /* ---------- events ---------- */

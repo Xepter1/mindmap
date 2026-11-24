@@ -2,10 +2,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { createApp } from '../server/app.js';
-import { FORMAT, LIMITS } from '../public/shared/model.js';
+import { FORMAT, LIMITS, noteImageLine } from '../public/shared/model.js';
 
 const quiet = { info() {}, error() {}, warn() {}, log() {} };
 
@@ -25,6 +26,14 @@ async function start(dataDir, extra = {}) {
   return { app, base, call };
 }
 const tmp = () => fs.mkdtemp(path.join(os.tmpdir(), 'ideenraum-test-'));
+// 1x1 pixel pictures; extra bytes at the end make further distinct files of the same type
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+const GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+const variant = (buf, tag) => Buffer.concat([buf, Buffer.from(tag)]);
+async function upload(s, buf, type = 'image/png', headers = {}) {
+  const r = await fetch(`${s.base}/api/images`, { method: 'POST', headers: { 'Content-Type': type, ...headers }, body: buf });
+  return { status: r.status, data: await r.json().catch(() => null) };
+}
 
 test('boards survive a restart (update-safe storage)', async () => {
   const dir = await tmp();
@@ -117,6 +126,11 @@ test('password protection', async () => {
   assert.equal(ok.status, 200);
   const cookie = ok.headers.get('set-cookie').split(';')[0];
   assert.equal((await s.call('GET', '/api/boards', undefined, { Cookie: cookie })).status, 200);
+  assert.equal((await upload(s, PNG)).status, 401, 'uploads need the login too');
+  const up = await upload(s, PNG, 'image/png', { Cookie: cookie });
+  assert.equal(up.status, 201);
+  assert.equal((await s.call('GET', `/api/images/${up.data.id}`)).status, 401);
+  assert.equal((await s.call('GET', `/api/images/${up.data.id}`, undefined, { Cookie: cookie })).status, 200);
   await s.app.close();
 });
 
@@ -156,7 +170,7 @@ test('imports a board exported from the claude.ai version', async () => {
 test('items of unknown future types are stored untouched', async () => {
   const s = await start(await tmp());
   const { data } = await s.call('POST', '/api/boards', { name: 'Zukunft' });
-  const future = { type: 'image', x: 10, y: 20, src: 'asset-123', crop: [0, 0, 1, 1] };
+  const future = { type: 'video', x: 10, y: 20, src: 'asset-123', crop: [0, 0, 1, 1] };
   assert.equal((await s.call('POST', `/api/boards/${data.id}/changes`, { changes: [{ id: 'img1', data: future }] })).status, 200);
   const b = await s.call('GET', `/api/boards/${data.id}`);
   assert.deepEqual(b.data.items.img1, { ...future, id: 'img1' });
@@ -195,5 +209,96 @@ test('notes on mindmap topics (since 1.2.0) are stored, blank ones dropped', asy
   assert.equal('note' in b.data.items.e, false, 'blank notes are not stored');
   assert.equal(b.data.items.l.note.length, LIMITS.noteLength);
   assert.equal('note' in b.data.items.r, false);
+  await s.app.close();
+});
+
+test('pictures (since 1.3.0): upload, download and checks', async () => {
+  const s = await start(await tmp());
+  const up = await upload(s, PNG);
+  assert.equal(up.status, 201);
+  const id = up.data.id;
+  assert.match(id, /^[a-f0-9]{32}\.png$/);
+  assert.equal((await upload(s, PNG)).data.id, id, 'the same picture is stored once');
+  assert.match((await upload(s, GIF, 'image/gif')).data.id, /\.gif$/);
+
+  const get = await fetch(`${s.base}/api/images/${id}`);
+  assert.equal(get.status, 200);
+  assert.equal(get.headers.get('content-type'), 'image/png');
+  assert.match(get.headers.get('cache-control'), /immutable/);
+  assert.match(get.headers.get('content-security-policy'), /sandbox/);
+  assert.deepEqual(Buffer.from(await get.arrayBuffer()), PNG);
+  assert.equal((await fetch(`${s.base}/api/images/${id}`, { headers: { 'If-None-Match': `"${id}"` } })).status, 304);
+  assert.equal((await fetch(`${s.base}/api/images/${id}`, { method: 'HEAD' })).headers.get('content-length'), String(PNG.length));
+
+  assert.equal((await upload(s, Buffer.from('<svg onload="alert(1)"></svg> and more'), 'image/svg+xml')).status, 415, 'only real pictures');
+  assert.equal((await upload(s, PNG, 'application/octet-stream')).status, 415);
+  assert.equal((await upload(s, PNG, 'image/png', { Origin: 'https://evil.example' })).status, 403);
+  const tooBig = await new Promise((resolve, reject) => { // only the announced size, the server refuses before reading
+    const req = http.request(`${s.base}/api/images`, { method: 'POST', headers: { 'Content-Type': 'image/png', 'Content-Length': LIMITS.imageBytes + 1 } }, res => {
+      res.resume(); resolve(res.statusCode); req.destroy();
+    });
+    req.on('error', reject); req.flushHeaders();
+  });
+  assert.equal(tooBig, 413);
+  assert.equal((await fetch(`${s.base}/api/images/${'0'.repeat(32)}.png`)).status, 404);
+  assert.equal((await fetch(`${s.base}/api/images/..%2F..%2Fmeta.json`)).status, 404);
+
+  const { data } = await s.call('POST', '/api/boards', { name: 'Bilder' });
+  await s.call('POST', `/api/boards/${data.id}/changes`, { changes: [
+    { id: 'i1', data: { type: 'image', x: 10, y: 20, w: 320, h: 200, src: id, text: 'kein Text' } },
+    { id: 'i2', data: { type: 'image', x: 0, y: 0, w: 50, h: 50, src: '../../meta.json' } },
+  ] });
+  const b = await s.call('GET', `/api/boards/${data.id}`);
+  assert.deepEqual(b.data.items.i1, { id: 'i1', type: 'image', z: 0, x: 10, y: 20, w: 320, h: 200, src: id });
+  assert.equal(b.data.items.i2.src, '', 'only names of stored pictures are allowed');
+  await s.app.close();
+});
+
+test('pictures travel with the full backup', async () => {
+  const s1 = await start(await tmp());
+  const png = (await upload(s1, PNG)).data.id, gif = (await upload(s1, GIF, 'image/gif')).data.id;
+  const unused = (await upload(s1, variant(PNG, 'unbenutzt'))).data.id;
+  const { data } = await s1.call('POST', '/api/boards', { name: 'Mit Bildern', items: [
+    { id: 'p', type: 'image', x: 0, y: 0, w: 100, h: 100, src: png },
+    { id: 'r', type: 'node', parent: null, order: 1, x: 0, y: 0, text: 'Feinguss', note: `Ablauf\n${noteImageLine(gif)}\nEnde` },
+  ] });
+  const exp = await s1.call('GET', '/api/export');
+  assert.equal(exp.status, 200);
+  assert.deepEqual(Object.keys(exp.data.images).sort(), [png, gif].sort(), 'only pictures the boards use');
+  assert.equal(exp.data.images[png], PNG.toString('base64'));
+  assert.equal(unused in exp.data.images, false);
+  await s1.app.close();
+
+  const s2 = await start(await tmp());
+  assert.equal((await s2.call('POST', '/api/import', exp.data)).status, 201);
+  const b = await s2.call('GET', `/api/boards/${data.id}`);
+  assert.equal(b.data.items.p.src, png);
+  for (const [id, buf] of [[png, PNG], [gif, GIF]]) {
+    const r = await fetch(`${s2.base}/api/images/${id}`);
+    assert.equal(r.status, 200);
+    assert.deepEqual(Buffer.from(await r.arrayBuffer()), buf);
+  }
+  await s2.app.close();
+});
+
+test('unused pictures are deleted after a week, used ones stay', async () => {
+  const dir = await tmp();
+  const s = await start(dir);
+  const ids = {};
+  for (const k of ['item', 'note', 'trash', 'old', 'fresh']) ids[k] = (await upload(s, variant(PNG, k))).data.id;
+  const { data } = await s.call('POST', '/api/boards', { name: 'Lernen', items: [
+    { id: 'p', type: 'image', x: 0, y: 0, w: 100, h: 100, src: ids.item },
+    { id: 'r', type: 'node', parent: null, order: 1, x: 0, y: 0, text: 'Thema', note: noteImageLine(ids.note) },
+  ] });
+  const gone = await s.call('POST', '/api/boards', { name: 'Weg', items: [{ id: 'q', type: 'image', x: 0, y: 0, w: 9, h: 9, src: ids.trash }] });
+  await s.app.store.flushAll();
+  await s.call('DELETE', `/api/boards/${gone.data.id}`);
+  const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+  for (const k of ['item', 'note', 'trash', 'old']) await fs.utimes(path.join(dir, 'images', ids[k]), old, old);
+
+  assert.equal(await s.app.store.cleanImages(), 1);
+  const left = await fs.readdir(path.join(dir, 'images'));
+  assert.deepEqual(left.sort(), [ids.item, ids.note, ids.trash, ids.fresh].sort());
+  assert.ok(data.id);
   await s.app.close();
 });

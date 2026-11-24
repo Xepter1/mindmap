@@ -1,6 +1,6 @@
 {
   "name": "ideenraum",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Selbst gehostete Mindmap- und Whiteboard-App für den Heimserver",
   "type": "module",
   "private": true,

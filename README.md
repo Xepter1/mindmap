@@ -4,6 +4,7 @@ Mindmaps und Whiteboards im Browser, gehostet auf deinem eigenen Server (Raspber
 
 - Mindmaps per Tastatur: `Tab` für ein Unterthema, `Enter` für ein Thema auf derselben Ebene, Pfeiltasten zum Navigieren
 - Notizen zu jedem Thema in einer Seitenleiste, zum Beispiel für Abläufe oder Lernstoff (Doppelklick aufs Thema)
+- Bilder auf der Fläche und in den Notizen: einfügen (⌘V), hineinziehen oder mit dem Bild-Knopf auswählen
 - Haftnotizen, Text, Formen, Pfeile mit Beschriftung, Stift
 - Mehrere Boards, Export als PNG oder JSON, komplette Sicherung mit einem Klick
 - Mehrere Geräte gleichzeitig: Änderungen erscheinen sofort überall (Laptop, Tablet, Handy)
@@ -49,6 +50,7 @@ Schlagen die Tests fehl, wird nichts gebaut und nichts ausgerollt.
 ## Wie deine Daten Updates überleben
 
 - **Getrennt vom Programm:** Alles liegt im Datenordner (unter Portainer im Volume `ideenraum-data`), eine JSON-Datei pro Board. Das Programm kann beliebig oft ersetzt werden.
+- **Bilder als eigene Dateien:** Jedes Bild liegt einmal im Ordner `images/`, benannt nach seiner Prüfsumme. Boards und Notizen verweisen nur darauf. Dasselbe Bild in mehreren Boards belegt den Platz also nur einmal. Große Fotos verkleinert der Browser vor dem Hochladen auf höchstens 2560 Pixel Kantenlänge.
 - **Datenformat mit Versionsnummer:** Jedes Board trägt ein `format`. Ändert eine neue Version die Struktur, wandelt sie alte Boards beim Start automatisch um (Migration). Vorher legt sie eine Sicherung in `backups/…_vor-migration-…` an.
 - **Kein Datenverlust durch Downgrade:** Stammen die Daten von einer neueren Version, startet eine ältere Version gar nicht erst und sagt dir das im Log.
 - **Unbekanntes bleibt erhalten:** Felder und Elementtypen, die eine Version nicht kennt, werden unverändert mitgespeichert.
@@ -63,7 +65,8 @@ Für Entwickler: Wie eine Migration angelegt wird, steht oben in `public/shared/
 | Tägliche Sicherung (nur wenn sich etwas geändert hat) | `backups/<Zeitpunkt>_taeglich/` | 14 Tage (`BACKUP_KEEP_DAYS`) |
 | Sicherung vor jeder Datenmigration | `backups/<Zeitpunkt>_vor-migration-…/` | die letzten 10 |
 | Gelöschte Boards | `trash/` | 30 Tage (`TRASH_KEEP_DAYS`) |
-| Komplette Sicherung als eine Datei | in der App: Export → „Komplette Sicherung herunterladen“ | so lange du willst |
+| Bilder | `images/` | solange ein Board, eine Sicherung oder der Papierkorb sie braucht, danach noch 7 Tage |
+| Komplette Sicherung als eine Datei (mit allen Bildern) | in der App: Export → „Komplette Sicherung herunterladen“ | so lange du willst |
 
 Die Sicherungen liegen auf demselben Gerät. Für eine Kopie außerhalb, etwa auf einem NAS, das Volume als Archiv sichern (per SSH auf dem Server):
 
@@ -72,7 +75,7 @@ docker run --rm -v ideenraum-data:/data:ro -v "$PWD":/backup alpine \
   tar czf /backup/ideenraum-$(date +%F).tgz -C /data .
 ```
 
-**Wiederherstellen einzelner Boards:** Stack stoppen, die Board-Datei aus `backups/…` oder `trash/` nach `boards/` kopieren (bei Dateien aus dem Papierkorb den Zeitstempel vor `__` aus dem Namen entfernen), Stack starten. Eine komplette Sicherungsdatei lässt sich in der App über Export → „Sicherung oder Board importieren“ einspielen.
+**Wiederherstellen einzelner Boards:** Stack stoppen, die Board-Datei aus `backups/…` oder `trash/` nach `boards/` kopieren (bei Dateien aus dem Papierkorb den Zeitstempel vor `__` aus dem Namen entfernen), Stack starten. Die Bilder dazu sind noch da, denn der Server löscht kein Bild, das eine Sicherung oder der Papierkorb noch braucht. Eine komplette Sicherungsdatei lässt sich in der App über Export → „Sicherung oder Board importieren“ einspielen.
 
 ## Umzug auf einen anderen Server
 
@@ -89,7 +92,7 @@ Ob der neue Rechner x86 oder ARM ist, spielt keine Rolle, das Image gibt es für
 
 3. In Portainer den Stack wie oben anlegen.
 
-Einfacher, aber ohne Backups und Papierkorb: in der App „Komplette Sicherung herunterladen“ und auf dem neuen Server importieren.
+Einfacher, aber ohne Backups und Papierkorb: in der App „Komplette Sicherung herunterladen“ und auf dem neuen Server importieren. Die Bilder sind in dieser Datei enthalten.
 
 ## Einstellungen
 
@@ -125,7 +128,7 @@ Updates: `./deploy/update.sh` (holt den neuesten Stand per `git pull` und baut n
 
 ```bash
 npm run dev    # Server mit automatischem Neustart auf http://localhost:8090
-npm test       # Tests (Speichern, Migration, Backup, Login, Live-Sync)
+npm test       # Tests (Speichern, Migration, Backup, Login, Live-Sync, Bilder)
 ```
 
 ```

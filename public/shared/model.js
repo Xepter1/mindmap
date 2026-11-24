@@ -10,7 +10,7 @@
 
 export const APP_ID = 'ideenraum';
 export const FORMAT = 1;
-export const TYPES = ['node', 'sticky', 'text', 'shape', 'stroke', 'link'];
+export const TYPES = ['node', 'sticky', 'text', 'shape', 'stroke', 'link', 'image'];
 export const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 export const LIMITS = {
   itemBytes: 256 * 1024,
@@ -19,7 +19,23 @@ export const LIMITS = {
   textLength: 5000,
   noteLength: 20000,
   points: 20000,
+  imageBytes: 15 * 1024 * 1024,
 };
+
+/* ---------- pictures (since 1.3.0) ---------- */
+// Every picture is stored once, as its own file named after the start of its SHA-256 checksum.
+// Items and notes refer to it by that name, so identical pictures share one file.
+export const IMAGE_RE = /^[a-f0-9]{32}\.(?:png|jpg|gif|webp)$/;
+export const IMAGE_TYPES = { png: 'image/png', jpg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
+// In a note a picture is a line of its own: ![Bild](bild:<name>)
+export const NOTE_IMAGE_LINE = /^!\[[^\]\n]{0,200}\]\(bild:([a-f0-9]{32}\.(?:png|jpg|gif|webp))\)$/;
+export const noteImageLine = id => `![Bild](bild:${id})`;
+/** Names of all pictures mentioned anywhere in a value (an item, a note, whole boards). */
+export function imageIds(value, into = new Set()) {
+  const s = typeof value === 'string' ? value : JSON.stringify(value) || '';
+  for (const m of s.matchAll(/\b[a-f0-9]{32}\.(?:png|jpg|gif|webp)\b/g)) into.add(m[0]);
+  return into;
+}
 
 export function uid() {
   const a = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -35,7 +51,7 @@ const col = v => (typeof v === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(v) ? v : u
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 const KNOWN = new Set(['id', 'type', 'z', 'parent', 'order', 'text', 'x', 'y', 'dx', 'dy', 'side', 'color', 'collapsed',
-  'a', 'b', 'label', 'arrow', 'style', 'dash', 'w', 'h', 'shape', 'size', 'pts', 'width', 'note']);
+  'a', 'b', 'label', 'arrow', 'style', 'dash', 'w', 'h', 'shape', 'size', 'pts', 'width', 'note', 'src']);
 
 /** Normalise one item of a known type. Unknown fields are carried over unchanged. */
 export function sanitizeItem(n) {
@@ -58,6 +74,10 @@ export function sanitizeItem(n) {
     if (n.style === 'straight') o.style = 'straight';
     if (n.dash) o.dash = true;
     if (col(n.color)) o.color = col(n.color);
+  } else if (n.type === 'image') { // since 1.3.0
+    o.x = num(n.x); o.y = num(n.y);
+    o.w = Math.max(1, num(n.w, 240)); o.h = Math.max(1, num(n.h, 180));
+    o.src = typeof n.src === 'string' && IMAGE_RE.test(n.src) ? n.src : '';
   } else if (TYPES.includes(n.type)) {
     o.x = num(n.x); o.y = num(n.y); o.text = str(n.text);
     if (col(n.color)) o.color = col(n.color);

@@ -1,5 +1,5 @@
 // Ideenraum – browser app. Talks to the server (see /server) through /api.
-import { uid, sanitizeItem, remapItems, TYPES, FORMAT, LIMITS } from './shared/model.js';
+import { uid, sanitizeItem, remapItems, TYPES, FORMAT, LIMITS, IMAGE_RE, IMAGE_TYPES, NOTE_IMAGE_LINE, noteImageLine, imageIds } from './shared/model.js';
 
 /* ================= basics ================= */
 const $ = s => document.querySelector(s);
@@ -104,11 +104,12 @@ const clientId = uid();
 class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
 async function api(method, url, body) {
   let r;
+  const blob = body instanceof Blob; // pictures go up as they are
   try {
     r = await fetch(url, {
       method, credentials: 'same-origin',
-      headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      headers: blob ? { 'Content-Type': body.type } : body !== undefined ? { 'Content-Type': 'application/json' } : {},
+      body: blob ? body : body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch (e) { throw new HttpError(0, 'Server nicht erreichbar'); }
   if (r.status === 401) { location.href = '/login'; throw new HttpError(401, 'Bitte anmelden'); }
@@ -116,6 +117,7 @@ async function api(method, url, body) {
   if (!r.ok) throw new HttpError(r.status, (data && data.error) || `Fehler ${r.status}`);
   return data;
 }
+let uploads = 0;           // pictures on their way to the server
 const Server = {
   q: new Map(),        // boardId -> Map(itemId -> item | null), waiting to be sent
   inflight: null,      // { boardId, ids } currently on the wire
@@ -161,7 +163,7 @@ const Server = {
     const m = this.q.get(boardId);
     return !!(m && m.has(id)) || !!(this.inflight && this.inflight.boardId === boardId && this.inflight.ids.has(id));
   },
-  pending() { return !!this.inflight || [...this.q.values()].some(m => m.size); },
+  pending() { return !!this.inflight || [...this.q.values()].some(m => m.size) || uploads > 0; },
   status() { setStatus(this.offline ? 'offline' : this.pending() ? 'busy' : 'saved'); },
 };
 store = Server;
@@ -200,6 +202,11 @@ async function resync() {
 const I = id => S.items[id];
 const isNode = n => n && n.type === 'node';
 function maxZ() { let m = 0; for (const id in S.items) m = Math.max(m, S.items[id].z || 0); return m; }
+function minZ() {
+  let m = Infinity;
+  for (const id in S.items) { const n = S.items[id]; if (n.type !== 'node' && n.type !== 'link' && !id.startsWith('__')) m = Math.min(m, n.z || 0); }
+  return m === Infinity ? 0 : m;
+}
 function kidsOf(id) {
   const out = [];
   for (const k in S.items) { const n = S.items[k]; if (n.type === 'node' && n.parent === id) out.push(n); }
@@ -407,7 +414,13 @@ function createEl(n) {
   el._type = n.type; el.dataset.id = n.id;
   if (n.type === 'stroke') el.innerHTML = '<svg><path class="vis" fill="none" stroke-linecap="round" stroke-linejoin="round"></path><path class="hit" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
   else if (n.type === 'shape') el.innerHTML = '<svg aria-hidden="true"></svg><div class="tx"></div>';
-  else el.innerHTML = '<div class="tx"></div>';
+  else if (n.type === 'image') {
+    const img = document.createElement('img');
+    img.alt = 'Bild'; img.draggable = false; img.decoding = 'async';
+    img.onload = () => { delete el.dataset.state; };
+    img.onerror = () => { if (img.getAttribute('src')) el.dataset.state = 'broken'; };
+    el.appendChild(img); el._img = img;
+  } else el.innerHTML = '<div class="tx"></div>';
   el._tx = el.querySelector('.tx');
   return el;
 }
@@ -422,6 +435,7 @@ function updateEl(el, n) {
     if (dropHint && dropHint.mode === 'child' && dropHint.target === n.id) cls += ' drop-child';
   }
   if (n.type === 'text' && !n.w) cls += ' auto';
+  if (n.type === 'image' && n.local) cls += ' uploading';
   if (editing) cls += ' editing';
   if (el.className !== cls) el.className = cls;
   const hidden = !!(m && m.hidden);
@@ -441,8 +455,16 @@ function updateEl(el, n) {
     const ph = n.type === 'node' ? (m && m.depth === 0 ? 'Hauptthema' : 'Thema') : n.type === 'text' ? 'Text' : '';
     if (el._tx.dataset.ph !== ph) el._tx.dataset.ph = ph;
   }
-  if (n.type === 'sticky' || n.type === 'shape') {
+  if (n.type === 'sticky' || n.type === 'shape' || n.type === 'image') {
     if (el._w !== n.w || el._h !== n.h) { el.style.width = n.w + 'px'; el.style.height = n.h + 'px'; el._w = n.w; el._h = n.h; el._fit = null; }
+  }
+  if (n.type === 'image') {
+    const src = n.local || (n.src ? imageUrl(n.src) : '');
+    if (el._src !== src) {
+      el._src = src;
+      if (src) { el.dataset.state = 'loading'; el._img.src = src; if (el._img.complete && el._img.naturalWidth) delete el.dataset.state; }
+      else { el._img.removeAttribute('src'); el.dataset.state = 'broken'; }
+    }
   }
   if (n.type === 'shape') {
     const key = (n.shape || 'rect') + n.w + 'x' + n.h;
@@ -553,7 +575,7 @@ function drawOverlay() {
       if (g) { const a = w2s(g.A.x, g.A.y), b = w2s(g.B.x, g.B.y); h += handle(a.x, a.y, 'h-end', 'end-a', 'Endpunkt verschieben') + handle(b.x, b.y, 'h-end', 'end-b', 'Endpunkt verschieben'); }
     } else if (L[single.id] && !(M[single.id] && M[single.id].hidden)) {
       const r = L[single.id], p = w2s(r.x, r.y), W = r.w * z, H = r.h * z, cx = p.x + W / 2, cy = p.y + H / 2;
-      if (single.type === 'sticky' || single.type === 'shape' || single.type === 'text') h += handle(p.x + W + 3, p.y + H + 3, 'h-resize', 'resize', 'Größe ändern');
+      if (single.type === 'sticky' || single.type === 'shape' || single.type === 'text' || single.type === 'image') h += handle(p.x + W + 3, p.y + H + 3, 'h-resize', 'resize', 'Größe ändern');
       if (single.type === 'node') {
         const m = M[single.id], off = single.collapsed && m.kids.length ? 52 : 26;
         if (m.depth === 0 || m.dir > 0) h += handle(p.x + W + off, cy, 'h-plus', 'plus-r', 'Unterthema hinzufügen (Tab)', PLUS);
@@ -1000,7 +1022,11 @@ window.addEventListener('pointermove', e => {
   } else if (g.kind === 'resize') {
     const n = S.items[g.id]; if (!n) return;
     const dx = pt.x - g.start.x, dy = pt.y - g.start.y; g.moved = true;
-    if (n.type === 'sticky') { let k = Math.max((g.o.w + dx) / g.o.w, (g.o.h + dy) / g.o.h); k = Math.max(k, 80 / Math.min(g.o.w, g.o.h)); n.w = r1(g.o.w * k); n.h = r1(g.o.h * k); }
+    if (n.type === 'sticky' || n.type === 'image') { // proportional
+      let k = Math.max((g.o.w + dx) / g.o.w, (g.o.h + dy) / g.o.h);
+      k = Math.max(k, (n.type === 'image' ? 24 : 80) / Math.min(g.o.w, g.o.h));
+      n.w = r1(g.o.w * k); n.h = r1(g.o.h * k);
+    }
     else if (n.type === 'shape') { n.w = r1(Math.max(40, g.o.w + dx)); n.h = r1(Math.max(30, e.shiftKey ? (g.o.w + dx) * g.o.h / g.o.w : g.o.h + dy)); }
     else if (n.type === 'text') n.w = r1(Math.max(40, g.o.w + dx));
     render();
@@ -1114,6 +1140,7 @@ stage.addEventListener('dblclick', e => {
     if (!n || S.editing === id) return;
     // a topic opens its notes (its text: F2, typing, or the title in the panel); other items edit their text
     if (n.type === 'node') openNotes(id, { focus: lastPointer !== 'touch' && !hasNote(n) });
+    else if (n.type === 'image') openViewer(n.src);
     else if (!S.readOnly) startEdit(id, { selectAll: true });
     return;
   }
@@ -1125,7 +1152,7 @@ let editOrig = '', editNew = false;
 const readText = tx => tx.innerText.replace(/\r/g, '').replace(/\n$/, '').slice(0, 5000);
 function startEdit(id, opts = {}) {
   const n = S.items[id];
-  if (!n || S.readOnly || id.startsWith('__') || n.type === 'stroke') return;
+  if (!n || S.readOnly || id.startsWith('__') || n.type === 'stroke' || n.type === 'image') return;
   if (n.type === 'link') { editLabel(id); return; }
   if (S.editing && S.editing !== id) finishEdit();
   if (M[id] && M[id].hidden) return;
@@ -1194,6 +1221,7 @@ const inField = t => t && t.closest && t.closest('input, textarea, select, [cont
 let pasteSeen = false;
 window.addEventListener('keydown', e => {
   const mod = e.metaKey || e.ctrlKey, k = e.key;
+  if (!viewer.hidden) { if (k === 'Escape') { e.preventDefault(); closeViewer(); } return; }
   if (k === 'Shift' && gesture && gesture.kind === 'nodedrag') { gesture.shift = true; refreshDropHint(); return; }
   if (S.editing) {
     const n = S.items[S.editing]; if (!n || n.type === 'link') return;
@@ -1247,12 +1275,14 @@ window.addEventListener('keydown', e => {
     if (k.startsWith('Arrow')) { e.preventDefault(); navigate(single.id, k); return; }
     if (k.length === 1 && k !== ' ' && !e.altKey) { e.preventDefault(); startEdit(single.id, { replace: k }); return; }
   }
+  if (single && single.type === 'image' && k === 'Enter') { e.preventDefault(); openViewer(single.src); return; }
   if (single && (k === 'Enter' || k === 'F2')) { e.preventDefault(); startEdit(single.id); return; }
   if (k.startsWith('Arrow') && S.sel.size) {
     e.preventDefault(); const s = e.shiftKey ? 10 : 1;
     nudge(k === 'ArrowLeft' ? -s : k === 'ArrowRight' ? s : 0, k === 'ArrowUp' ? -s : k === 'ArrowDown' ? s : 0); return;
   }
   const tools = { v: 'select', h: 'hand', m: 'node', n: 'sticky', t: 'text', r: 'shape', l: 'link', p: 'pen' };
+  if (!e.altKey && lower === 'b') { e.preventDefault(); pickImages(); return; }
   if (!e.altKey && tools[lower]) { e.preventDefault(); setTool(tools[lower]); }
 });
 window.addEventListener('keyup', e => {
@@ -1283,6 +1313,9 @@ document.addEventListener('cut', e => {
 document.addEventListener('paste', e => {
   pasteSeen = true;
   if (S.editing || inField(e.target) || S.readOnly) return;
+  if (e.target.closest && e.target.closest('#notes, #viewer')) return; // the notes panel handles its own pasting
+  const files = imageFilesFrom(e.clipboardData);
+  if (files.length) { e.preventDefault(); addImages(files); return; }
   const t = (e.clipboardData && e.clipboardData.getData('text/plain')) || '';
   e.preventDefault();
   if (t.startsWith('IDEENRAUM:')) { try { pasteData(JSON.parse(t.slice(10))); } catch (err) {} }
@@ -1295,6 +1328,8 @@ const ctx = $('#ctx');
 const IC = {
   trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>',
   front: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2" fill="currentColor" fill-opacity=".25"/><path d="M15 9V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h4"/></svg>',
+  back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M15 9V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h4V9Z" fill="currentColor" fill-opacity=".25"/><rect x="9" y="9" width="11" height="11" rx="2"/></svg>',
+  view: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M10 20H4v-6M20 4l-6.5 6.5M4 20l6.5-6.5"/></svg>',
   child: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="9" width="7" height="6" rx="1.5"/><path d="M10 12h4M18 9v6M15 12h6"/></svg>',
   fold: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 9 4-4 4 4M8 15l4 4 4-4"/></svg>',
   unfold: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 5 4 4 4-4M8 19l4-4 4 4"/></svg>',
@@ -1335,6 +1370,8 @@ function updateCtx() {
         h += ibtn('notes', 'notes', notes.open ? 'Notizen schließen' : 'Notizen (Doppelklick)', notes.open);
       }
       if (moved) h += (one ? '' : '<div class="sep"></div>') + ibtn('relayout', 'relayout', 'Anordnung zurücksetzen');
+    } else if (t === 'image') {
+      if (one && one.src) h += ibtn('view', 'view', 'Groß anzeigen (Doppelklick)');
     } else if (t === 'sticky' || t === 'shape') {
       for (const c of STICKY) h += swatch(c, items.every(n => n.color === c), 'color:' + c);
       if (t === 'shape') { h += '<div class="sep"></div>'; for (const s of ['rect', 'ellipse', 'diamond']) h += ibtn('shape:' + s, s, { rect: 'Rechteck', ellipse: 'Ellipse', diamond: 'Raute' }[s], items.every(n => (n.shape || 'rect') === s)); }
@@ -1353,7 +1390,7 @@ function updateCtx() {
         if (one) h += ibtn('label', 'label', 'Beschriftung');
       }
     }
-    if (t !== 'node' && t !== 'link') h += (h ? '<div class="sep"></div>' : '') + ibtn('front', 'front', 'Nach vorne');
+    if (t !== 'node' && t !== 'link') h += (h ? '<div class="sep"></div>' : '') + ibtn('front', 'front', 'Nach vorne') + ibtn('back', 'back', 'Nach hinten');
     h += (h ? '<div class="sep"></div>' : '') + `<button class="btn danger" data-act="delete" title="Löschen (Entf)" aria-label="Löschen">${IC.trash}</button>`;
     ctx.innerHTML = h;
   }
@@ -1381,7 +1418,9 @@ ctx.addEventListener('click', e => {
   else if (act === 'fold') { toggleCollapse(ids[0]); return; }
   else if (act === 'notes') { if (notes.open) closeNotes(); else openNotes(ids[0], { focus: lastPointer !== 'touch' }); return; }
   else if (act === 'relayout') { for (const id of ids) for (const x of subtreeIds(id)) { const n = S.items[x]; if (n) { delete n.dx; delete n.dy; } } }
-  else if (act === 'front') { let z = maxZ(); for (const n of items) n.z = ++z; }
+  else if (act === 'front') { let z = maxZ(); for (const n of [...items].sort((a, b) => (a.z || 0) - (b.z || 0))) n.z = ++z; }
+  else if (act === 'back') { let z = minZ(); for (const n of [...items].sort((a, b) => (b.z || 0) - (a.z || 0))) n.z = --z; }
+  else if (act === 'view') { openViewer(items[0].src); return; }
   else if (act === 'delete') { deleteSelection(); return; }
   commit(); render();
 });
@@ -1410,16 +1449,184 @@ flyout.addEventListener('click', e => {
   openFlyout(S.tool);
 });
 
+/* ================= pictures ================= */
+// Pictures are stored on the server, one file each (see /api/images). Big photos are made
+// smaller in the browser first: the longest side becomes 2560 pixels at most.
+const MB = 1024 * 1024;
+const imageUrl = id => '/api/images/' + id;
+class UserError extends Error {}
+const isImageFile = f => !!f && (/^image\//.test(f.type || '') || (!f.type && /\.(png|jpe?g|gif|webp|heic|heif|avif|bmp)$/i.test(f.name || '')));
+/** Picture files from a paste or a drop. Text copied from Word or Pages often brings a picture of itself: then the text wins. */
+function imageFilesFrom(dt) {
+  if (!dt) return [];
+  let files = [...(dt.files || [])];
+  if (!files.length && dt.items) for (const it of dt.items) if (it.kind === 'file') { const f = it.getAsFile(); if (f) files.push(f); }
+  files = files.filter(isImageFile);
+  if (!files.length) return [];
+  const text = ((dt.getData && dt.getData('text/plain')) || '').trim();
+  const nameLike = /^[^\s/\\]+\.(png|jpe?g|gif|webp|heic|heif|avif|bmp|tiff?)$/i.test(text) || files.some(f => f.name === text);
+  if (text && !nameLike && !/^(https?|file):\/\/\S+$/i.test(text)) {
+    const html = (dt.getData && dt.getData('text/html')) || '';
+    if (!/^\s*(<meta[^>]*>\s*)?<img\b[^>]*>\s*$/i.test(html)) return [];
+  }
+  return files;
+}
+const canvasBlob = (cv, type, q) => new Promise(r => { try { cv.toBlob(r, type, q); } catch (e) { r(null); } });
+function isOpaque(c, w, h) {
+  try { const d = c.getImageData(0, 0, w, h).data; for (let i = 3; i < d.length; i += 4) if (d[i] < 255) return false; return true; }
+  catch (e) { return false; }
+}
+/** Read a picture file, make it smaller if needed. Returns {blob, w, h}. */
+async function prepareImage(file) {
+  if (file.size > 80 * MB) throw new UserError('Das Bild ist zu groß (über 80 MB).');
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.src = url;
+    try { await img.decode(); }
+    catch (e) {
+      throw new UserError(/hei[cf]/i.test((file.type || '') + (file.name || ''))
+        ? 'HEIC-Fotos kann dieser Browser nicht öffnen. Bitte als JPG speichern oder Safari nehmen.'
+        : 'Dieses Bild kann der Browser nicht öffnen.');
+    }
+    const w = img.naturalWidth || 800, h = img.naturalHeight || 600;
+    const keep = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(file.type)
+      && file.size <= (file.type === 'image/gif' ? 10 * MB : 3 * MB) && Math.max(w, h) <= 4096;
+    if (keep) return { blob: file, w, h };
+    let k = Math.min(1, 2560 / Math.max(w, h));
+    for (let attempt = 0; attempt < 5; attempt++, k *= 0.75) {
+      const cw = Math.max(1, Math.round(w * k)), ch = Math.max(1, Math.round(h * k));
+      const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
+      const c = cv.getContext('2d');
+      c.drawImage(img, 0, 0, cw, ch);
+      const opaque = file.type === 'image/jpeg' || isOpaque(c, cw, ch);
+      let blob = await canvasBlob(cv, opaque ? 'image/jpeg' : 'image/webp', 0.86);
+      if (!blob || (!opaque && blob.type !== 'image/webp')) blob = await canvasBlob(cv, 'image/png');
+      if (blob && blob.size <= LIMITS.imageBytes) return { blob, w: cw, h: ch };
+    }
+    throw new UserError('Das Bild ist zu groß.');
+  } finally { URL.revokeObjectURL(url); }
+}
+async function uploadImage(blob) {
+  const r = await api('POST', '/api/images', blob);
+  if (!r || !IMAGE_RE.test(r.id)) throw new HttpError(500, 'Unerwartete Antwort vom Server');
+  return r.id;
+}
+/** Load a picture into the browser cache, so swapping it in does not flicker. */
+const preloadImage = url => new Promise(resolve => { const im = new Image(); im.onload = im.onerror = () => resolve(im); im.src = url; });
+const imageError = e => e instanceof UserError ? e.message : 'Das Bild konnte nicht hochgeladen werden: ' + (e && e.message || 'unbekannter Fehler');
+/** Size on the canvas: about half the screen, never larger than the picture itself. */
+function imageSize(w, h) {
+  const a = viewArea(), max = clamp(Math.min(a.x1 - a.x0, a.y1 - a.y0) * 0.55 / S.cam.z, 120, 800);
+  const k = Math.min(1, max / Math.max(w, h));
+  return { w: Math.max(8, r1(w * k)), h: Math.max(8, r1(h * k)) };
+}
+/** Put pictures on the canvas, centred on `at` (world coordinates) or on the visible area. */
+async function addImages(files, at) {
+  if (S.readOnly || !S.boardId || !files.length) return;
+  const board = S.boardId, ids = [], list = files.slice(0, 20);
+  if (files.length > list.length) toast(`Es werden die ersten ${list.length} Bilder eingefügt.`);
+  const a = viewArea(), c = at || s2w((a.x0 + a.x1) / 2, (a.y0 + a.y1) / 2);
+  let x0 = null, x = 0, y = 0, rowH = 0, col = 0;
+  for (const f of list) {
+    let p;
+    try { p = await prepareImage(f); } catch (e) { toast(imageError(e), 5000); continue; }
+    if (S.boardId !== board) return;
+    const sz = imageSize(p.w, p.h);
+    if (x0 === null) { x0 = x = r1(c.x - sz.w / 2); y = r1(c.y - sz.h / 2); }
+    else if (col === 4) { col = 0; x = x0; y = r1(y + rowH + 24); rowH = 0; } // four in a row
+    const tmp = { id: '__up' + uid(), type: 'image', x, y, w: sz.w, h: sz.h, src: '', local: URL.createObjectURL(p.blob), z: maxZ() + 1 };
+    x = r1(x + sz.w + 24); rowH = Math.max(rowH, sz.h); col++;
+    S.items[tmp.id] = tmp; render();
+    uploads++; Server.status();
+    let id = null;
+    try { id = await uploadImage(p.blob); await preloadImage(imageUrl(id)); }
+    catch (e) { toast(imageError(e), 5000); }
+    finally { uploads--; Server.status(); }
+    const t = S.items[tmp.id]; delete S.items[tmp.id];
+    setTimeout(() => URL.revokeObjectURL(tmp.local), 1000);
+    if (!id || !t || S.boardId !== board) { render(); continue; }
+    const n = newItem('image', { x: t.x, y: t.y, w: t.w, h: t.h, src: id });
+    ids.push(n.id); S.sel = new Set(ids); setTool('select'); commit(); render();
+  }
+}
+const imageFile = $('#imageFile');
+let pickFor = null;
+/** Open the file chooser. `target` is a spot in the notes, otherwise the pictures go onto the canvas. */
+function pickImages(target) {
+  if (S.readOnly || !S.boardId) return;
+  pickFor = target || null; imageFile.value = ''; imageFile.click();
+}
+imageFile.addEventListener('change', () => {
+  const files = [...imageFile.files].filter(isImageFile), t = pickFor;
+  imageFile.value = ''; pickFor = null;
+  if (!files.length) return;
+  if (t && t.notes) insertNoteImages(files, t); else addImages(files);
+});
+// drag pictures from Finder, Explorer or the photo library onto the canvas or into the notes
+const dragHasFiles = e => !!(e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files'));
+function markDrop(el) { el.classList.add('drop-on'); clearTimeout(el._dropT); el._dropT = setTimeout(() => el.classList.remove('drop-on'), 160); }
+window.addEventListener('dragover', e => {
+  if (!dragHasFiles(e)) return;
+  e.preventDefault(); // never let the browser open the file instead
+  const inNotes = e.target.closest && e.target.closest('#notes');
+  const ok = !S.readOnly && !!S.boardId && (inNotes ? !!notes.id : stage.contains(e.target));
+  e.dataTransfer.dropEffect = ok ? 'copy' : 'none';
+  if (ok) markDrop(inNotes ? notesEl : stage);
+});
+window.addEventListener('drop', e => {
+  if (!dragHasFiles(e)) return;
+  e.preventDefault();
+  if (S.readOnly || !S.boardId) return;
+  const inNotes = e.target.closest && e.target.closest('#notes');
+  if (!inNotes && !stage.contains(e.target)) return;
+  const files = imageFilesFrom(e.dataTransfer);
+  if (!files.length) { toast('Hier lassen sich Bilder ablegen (PNG, JPG, GIF oder WebP).', 4000); return; }
+  if (inNotes) { if (notes.id) insertNoteImages(files, dropSpot(e.target)); return; }
+  addImages(files, s2w(e.clientX, e.clientY));
+});
+/* ---- full-size view ---- */
+const viewer = $('#viewer'), viewerImg = $('#viewerImg');
+let viewerBack = null;
+function openViewer(id) {
+  if (!IMAGE_RE.test(id || '')) return;
+  viewerBack = document.activeElement;
+  viewerImg.src = imageUrl(id); $('#viewerOpen').href = imageUrl(id);
+  viewer.hidden = false; $('#viewerClose').focus({ preventScroll: true });
+}
+function closeViewer() {
+  if (viewer.hidden) return false;
+  viewer.hidden = true; viewerImg.removeAttribute('src');
+  const b = viewerBack; viewerBack = null;
+  if (b && b.isConnected && b !== document.body && b.focus) b.focus({ preventScroll: true }); else stage.focus({ preventScroll: true });
+  return true;
+}
+viewer.addEventListener('click', e => { if (!e.target.closest('#viewerOpen')) closeViewer(); });
+viewer.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeViewer(); } });
+async function blobToBase64(blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer()); let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function base64ToBlob(b64, type) {
+  const s = atob(b64), bytes = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i);
+  return new Blob([bytes], { type });
+}
+
 /* ================= notes panel ================= */
 // Notes belong to mindmap topics (field `note`). The panel shows the notes of the
 // selected topic and follows the selection while it is open, so a click on another
 // topic shows that topic's notes. Changes are saved a moment after typing stops.
-const notesEl = $('#notes'), notesTitle = $('#notesTitle'), notesText = $('#notesText'), notesPath = $('#notesPath'),
-      notesBody = $('#notesBody'), notesEmpty = $('#notesEmpty'), notesFoot = $('#notesFoot');
+// A picture in a note is a line of its own (NOTE_IMAGE_LINE). The panel shows the note as
+// blocks of text with the pictures in between; every text block is a textarea of its own.
+const notesEl = $('#notes'), notesTitle = $('#notesTitle'), notesFlow = $('#notesFlow'), notesPath = $('#notesPath'),
+      notesBody = $('#notesBody'), notesEmpty = $('#notesEmpty'), notesFoot = $('#notesFoot'), notesImage = $('#notesImage');
 const NOTE_ICON = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 3.5h6M3 6h6M3 8.5h3.5"/></svg>';
-const notes = { open: false, id: null, dirty: false, touched: false, timer: 0, since: 0, rect: null, pathKey: '', color: '' };
+const X_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M7 7l10 10M17 7 7 17"/></svg>';
+const notes = { open: false, id: null, dirty: false, touched: false, timer: 0, since: 0, rect: null, pathKey: '', color: '',
+                placeholder: '', caret: null, picUndo: false, flowW: 0 };
 let lastPointer = 'mouse';
-notesText.maxLength = LIMITS.noteLength;
 notesTitle.maxLength = LIMITS.textLength;
 function hasNote(n) { return !!(n && typeof n.note === 'string' && n.note.trim()); }
 const shortText = s => { const t = String(s || '').split('\n')[0].trim(); return t.length > 40 ? t.slice(0, 38) + '…' : t; };
@@ -1428,12 +1635,15 @@ function notesTarget() {
   const id = [...S.sel][0], n = S.items[id];
   return isNode(n) && !(M[id] && M[id].hidden) ? id : null;
 }
-/** While someone types in the panel, changes from other devices must not overwrite the topic. */
-function notesBusy(id) { return notes.open && notes.id === id && (notes.dirty || notesEl.contains(document.activeElement)); }
+/** While someone types in the panel or a picture is on its way, changes from other devices must not overwrite the topic. */
+function notesBusy(id) { return notes.open && notes.id === id && (notes.dirty || notesEl.contains(document.activeElement) || flowPending()); }
 function measureNotes() {
   const el = notesEl;
   notes.rect = notes.open && !el.hidden ? { left: el.offsetLeft, top: el.offsetTop, width: el.offsetWidth, height: el.offsetHeight } : null;
-  if (notes.rect && !notesBody.hidden) fitNotesTitle();
+  if (notes.rect && !notesBody.hidden) {
+    fitNotesTitle();
+    if (notesFlow.clientWidth !== notes.flowW) { notes.flowW = notesFlow.clientWidth; fitSegs(); } // new width, new line breaks
+  }
 }
 function openNotes(id, opts = {}) {
   if (id && S.items[id]) S.sel = new Set([id]);
@@ -1442,8 +1652,8 @@ function openNotes(id, opts = {}) {
   const t = notesTarget();
   if (t) ensureVisible(t, true);
   if (opts.focus && t && !S.readOnly) {
-    notesText.focus({ preventScroll: true });
-    if (opts.focus === 'end') { const end = notesText.value.length; notesText.setSelectionRange(end, end); }
+    const list = segs();
+    if (opts.focus === 'end') focusSeg(list[list.length - 1], 'end'); else focusSeg(list[0], 0);
   }
 }
 function closeNotes() {
@@ -1477,12 +1687,12 @@ function flushNotes(final) {
 }
 function fitNotesTitle() { notesTitle.style.height = 'auto'; notesTitle.style.height = notesTitle.scrollHeight + 'px'; }
 function updateNotesFoot() {
-  const len = notesText.value.length, max = LIMITS.noteLength;
+  const n = S.items[notes.id], len = n && typeof n.note === 'string' ? n.note.length : 0, max = LIMITS.noteLength;
   let msg = '';
   if (S.readOnly) msg = '';
   else if (len >= max) msg = `Die Notiz ist voll (${max.toLocaleString('de-DE')} Zeichen).`;
   else if (len > max * 0.9) msg = `Noch ${(max - len).toLocaleString('de-DE')} Zeichen frei.`;
-  else if (!notesText.value.trim()) msg = 'Tipp: Mit „1.“ oder „-“ anfangen, Enter setzt die Liste fort.';
+  else if (!hasNote(n)) msg = 'Tipp: Mit „1.“ oder „-“ anfangen, Enter setzt die Liste fort. Bilder kannst du einfügen oder hineinziehen.';
   if (notesFoot.textContent !== msg) notesFoot.textContent = msg;
   notesFoot.hidden = !msg;
 }
@@ -1491,23 +1701,25 @@ function syncNotes() {
   if (!notes.open) return;
   const id = notesTarget();
   let fresh = false;
-  if (id !== notes.id) { flushNotes(true); notes.id = id; notes.touched = false; fresh = true; }
+  if (id !== notes.id) { flushNotes(true); notes.id = id; notes.touched = false; notes.picUndo = false; notes.caret = null; fresh = true; }
   if (notesBody.hidden !== !id) notesBody.hidden = !id;
   if (notesEmpty.hidden !== !!id) notesEmpty.hidden = !!id;
   if (!id) return;
   const n = S.items[id], m = M[id], focus = document.activeElement;
   const c = (m && m.color) || 'var(--root-bg)';
   if (notes.color !== c) { notesEl.style.setProperty('--c', c); notes.color = c; }
-  notesTitle.readOnly = notesText.readOnly = S.readOnly;
+  notesTitle.readOnly = S.readOnly;
+  if (notesImage.hidden !== S.readOnly) notesImage.hidden = S.readOnly;
   if ((fresh || focus !== notesTitle) && notesTitle.value !== (n.text || '')) { notesTitle.value = n.text || ''; fitNotesTitle(); }
   else if (fresh) fitNotesTitle();
-  if ((fresh || focus !== notesText) && notesText.value !== (n.note || '')) {
-    notesText.value = n.note || '';
-    if (fresh) { notesText.setSelectionRange(0, 0); notesText.scrollTop = 0; }
-  }
   if (fresh) {
     notesTitle.placeholder = m && m.depth === 0 ? 'Hauptthema' : 'Thema';
-    notesText.placeholder = S.readOnly ? 'Keine Notizen.' : `Notizen zu „${shortText(n.text) || 'diesem Thema'}“ …`;
+    notes.placeholder = S.readOnly ? 'Keine Notizen.' : `Notizen zu „${shortText(n.text) || 'diesem Thema'}“ …`;
+  }
+  // rebuild the blocks when the note changed elsewhere (undo, another device), not while someone works in them
+  if (fresh || !notesFlow.firstElementChild
+      || (!notesFlow.contains(focus) && !flowPending() && flowNote() !== joinNote(splitNote(n.note || '')))) {
+    buildFlow(n.note || '', !fresh);
   }
   // the topics above this one; a click on one jumps there
   const chain = [], seen = new Set([id]);
@@ -1520,22 +1732,197 @@ function syncNotes() {
   }
   updateNotesFoot();
 }
+
+/* ---- text blocks and pictures ---- */
+/** "text\n![Bild](bild:…)\ntext" -> [{t:'text', v}, {t:'img', id}, {t:'text', v}]: always text first and last. */
+function splitNote(s) {
+  const out = []; let buf = [];
+  for (const line of String(s || '').split('\n')) {
+    const m = NOTE_IMAGE_LINE.exec(line);
+    if (m) { out.push({ t: 'text', v: buf.join('\n') }, { t: 'img', id: m[1] }); buf = []; }
+    else buf.push(line);
+  }
+  out.push({ t: 'text', v: buf.join('\n') });
+  return out;
+}
+function joinNote(blocks) {
+  const parts = [];
+  for (const b of blocks) { if (b.t === 'img') parts.push(noteImageLine(b.id)); else if (b.v !== '') parts.push(b.v); }
+  return parts.join('\n');
+}
+const segs = () => [...notesFlow.querySelectorAll('textarea.seg')];
+const flowPending = () => !!notesFlow.querySelector('.nimg.up');
+/** The note as the panel shows it right now (pictures still uploading are left out). */
+function flowNote() {
+  const blocks = [];
+  for (const el of notesFlow.children) {
+    if (el.tagName === 'TEXTAREA') blocks.push({ t: 'text', v: el.value });
+    else if (el.dataset.img) blocks.push({ t: 'img', id: el.dataset.img });
+  }
+  return joinNote(blocks);
+}
+function makeSeg(v) {
+  const t = document.createElement('textarea');
+  t.className = 'seg'; t.rows = 1; t.value = v; t.readOnly = S.readOnly;
+  t.setAttribute('aria-label', 'Notizen zum Thema');
+  return t;
+}
+function makeFigure(id) {
+  const f = document.createElement('figure'); f.className = 'nimg'; f.tabIndex = 0;
+  const box = document.createElement('span'); box.className = 'nimg-box';
+  const img = document.createElement('img'); img.alt = 'Bild in der Notiz'; img.draggable = false; img.decoding = 'async';
+  img.onload = () => f.classList.remove('broken');
+  img.onerror = () => { if (img.getAttribute('src')) f.classList.add('broken'); };
+  box.appendChild(img);
+  if (!S.readOnly) {
+    const x = document.createElement('button');
+    x.type = 'button'; x.className = 'nimg-x'; x.tabIndex = -1; x.title = 'Bild entfernen'; x.setAttribute('aria-label', 'Bild entfernen'); x.innerHTML = X_ICON;
+    box.appendChild(x);
+  }
+  f.appendChild(box);
+  if (id) { f.dataset.img = id; f.title = 'Groß anzeigen'; img.src = imageUrl(id); }
+  return f;
+}
+function buildFlow(note, keepScroll) {
+  const top = notesFlow.scrollTop;
+  notesFlow.textContent = '';
+  for (const b of splitNote(note)) notesFlow.appendChild(b.t === 'img' ? makeFigure(b.id) : makeSeg(b.v));
+  updateSegHints(); fitSegs();
+  notesFlow.scrollTop = keepScroll ? top : 0;
+}
+/** Text blocks grow with their text; the panel scrolls as a whole. */
+function fitSeg(t) {
+  const top = notesFlow.scrollTop;
+  t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px';
+  notesFlow.scrollTop = top;
+}
+function fitSegs() {
+  const list = segs(), top = notesFlow.scrollTop;
+  for (const t of list) t.style.height = 'auto';
+  const hs = list.map(t => t.scrollHeight);
+  list.forEach((t, i) => { t.style.height = hs[i] + 'px'; });
+  notesFlow.scrollTop = top;
+}
+function updateSegHints() { // the placeholder shows only while the note is a single empty block
+  const list = segs(), one = list.length === 1;
+  list.forEach((t, i) => { const ph = one && i === 0 ? notes.placeholder : ''; if (t.placeholder !== ph) t.placeholder = ph; t.readOnly = S.readOnly; });
+}
+/** Every block may only take what is left of the note's limit. */
+function segRoom(t) { t.maxLength = Math.max(t.value.length, LIMITS.noteLength - (flowNote().length - t.value.length)); }
+function focusSeg(t, where) {
+  if (!t || t.tagName !== 'TEXTAREA') return;
+  t.focus({ preventScroll: true });
+  const p = where === 'end' ? t.value.length : clamp(Number(where) || 0, 0, t.value.length);
+  t.setSelectionRange(p, p);
+  revealSeg(t, where === 'end' ? 'end' : 'start');
+}
+function revealSeg(t, edge) { // scroll the panel so the start (or the end) of a block is in view
+  const f = notesFlow, top = t.offsetTop, bottom = top + t.offsetHeight, view = f.clientHeight;
+  if (edge === 'end') { if (bottom > f.scrollTop + view || bottom < f.scrollTop + 40) f.scrollTop = Math.max(0, bottom - view + 16); }
+  else if (top < f.scrollTop || top + 40 > f.scrollTop + view) f.scrollTop = Math.max(0, top - 16);
+}
+/** Something in the panel changed (typing, a picture added or removed): write it to the topic. */
+function onFlowChanged() {
+  const n = S.items[notes.id]; if (!n || S.readOnly) return;
+  const had = hasNote(n), v = flowNote();
+  if (v) n.note = v; else delete n.note;
+  noteEdited(); updateNotesFoot(); updateSegHints();
+  if (had !== hasNote(n)) render(); // the badge on the topic appears or goes away
+}
+/** Adding or removing a picture is a step of its own, so ⌘Z takes back exactly that. */
+function pictureStep() { onFlowChanged(); flushNotes(false); notes.picUndo = true; }
+function removeNoteFigure(fig, focus, failed) {
+  const a = fig.previousElementSibling, b = fig.nextElementSibling;
+  if (!a || !b || a.tagName !== 'TEXTAREA' || b.tagName !== 'TEXTAREA') return;
+  if (!failed) flushNotes(false); // text typed before is a step of its own
+  const pos = a.value.length;
+  a.value = a.value + (a.value && b.value ? '\n' : '') + b.value;
+  b.remove(); fig.remove(); fitSeg(a);
+  if (focus) focusSeg(a, pos);
+  if (failed) onFlowChanged(); else pictureStep();
+}
+/** Where a drop on the notes panel puts the pictures; null means at the end. */
+function dropSpot(target) {
+  const fig = target && target.closest && target.closest('figure.nimg');
+  if (fig && fig.nextElementSibling) return { seg: fig.nextElementSibling, start: 0, end: 0 };
+  const seg = target && target.closest && target.closest('textarea.seg');
+  if (!seg) return null;
+  return seg === document.activeElement ? { seg, start: seg.selectionStart, end: seg.selectionEnd } : { seg, start: seg.value.length, end: seg.value.length };
+}
+/** Put pictures into the open notes at a spot ({seg, start, end}), each on a line of its own. */
+async function insertNoteImages(files, where) {
+  const nodeId = notes.id;
+  if (!nodeId || !S.items[nodeId] || S.readOnly || !files.length) return;
+  const list = files.slice(0, 10);
+  if (files.length > list.length) toast(`Es werden die ersten ${list.length} Bilder eingefügt.`);
+  if (flowNote().length + list.length * 60 > LIMITS.noteLength) { toast('Die Notiz ist voll, für Bilder ist kein Platz mehr.', 4000); return; }
+  let seg = where && where.seg && where.seg.tagName === 'TEXTAREA' && notesFlow.contains(where.seg) ? where.seg : null, start, end;
+  if (seg) { start = clamp(where.start ?? seg.value.length, 0, seg.value.length); end = clamp(where.end ?? start, start, seg.value.length); }
+  else { const all = segs(); seg = all[all.length - 1]; if (!seg) return; start = end = seg.value.length; }
+  flushNotes(false);
+  // split the text at the caret; a line break right there is taken by the picture itself
+  let before = seg.value.slice(0, start), after = seg.value.slice(end), caret = 0;
+  const marker = before.slice(before.lastIndexOf('\n') + 1);
+  if (/^\s*(?:\d{1,3}[.)]|[-–•*])\s+$/.test(marker) && /^(\n|$)/.test(after)) {
+    // on a fresh list item ("3. "): the picture belongs to the item above, the list goes on below it
+    before = before.slice(0, before.length - marker.length); after = marker + after; caret = marker.length;
+  }
+  if (before.endsWith('\n')) before = before.slice(0, -1);
+  if (!caret && after.startsWith('\n')) after = after.slice(1);
+  seg.value = before; fitSeg(seg);
+  let last = seg; const figs = [];
+  for (let i = 0; i < list.length; i++) {
+    const fig = makeFigure(null), next = makeSeg('');
+    fig.classList.add('up'); last.after(fig, next);
+    figs.push(fig); last = next;
+  }
+  last.value = after; fitSeg(last); updateSegHints();
+  focusSeg(last, caret); // carry on writing below the pictures
+  for (let i = 0; i < list.length; i++) {
+    const fig = figs[i], img = fig.querySelector('img');
+    let id = null, local = null;
+    uploads++; Server.status();
+    try {
+      const p = await prepareImage(list[i]);
+      local = URL.createObjectURL(p.blob); img.src = local;
+      await img.decode().catch(() => {});
+      if (document.activeElement === last) revealSeg(last, 'start');
+      id = await uploadImage(p.blob);
+      await preloadImage(imageUrl(id));
+    } catch (e) { toast(imageError(e), 5000); }
+    finally { uploads--; Server.status(); }
+    if (local) setTimeout(() => URL.revokeObjectURL(local), 1000);
+    if (fig.isConnected && notes.id === nodeId) {
+      if (!id) { removeNoteFigure(fig, false, true); continue; }
+      flushNotes(false); // text typed in the meantime is a step of its own
+      fig.classList.remove('up'); fig.dataset.img = id; fig.title = 'Groß anzeigen'; img.src = imageUrl(id);
+      pictureStep();
+    } else if (id) { // the panel shows another topic by now: the picture goes to the end of its own topic
+      const n = S.items[nodeId];
+      if (n) {
+        const v = (n.note || '').replace(/\s+$/, '');
+        n.note = (v ? v + '\n' : '') + noteImageLine(id); commit(); render();
+        toast('Das Bild steht am Ende der Notiz.');
+      }
+    }
+  }
+}
 /** Enter in a list line ("1. …", "- …") starts the next item; on an empty item it ends the list. */
-function continueList(e) {
-  const t = notesText, pos = t.selectionStart;
+function continueList(e, t) {
+  const pos = t.selectionStart;
   if (pos !== t.selectionEnd || S.readOnly) return;
   const start = t.value.lastIndexOf('\n', pos - 1) + 1, line = t.value.slice(start, pos);
   const m = line.match(/^(\s*)(?:(\d{1,3})([.)])|([-–•*]))\s+/);
   if (!m) return;
   e.preventDefault();
-  if (!line.slice(m[0].length).trim()) { t.setSelectionRange(start, pos); insertNoteText(''); return; }
-  insertNoteText('\n' + m[1] + (m[2] ? (Number(m[2]) + 1) + m[3] : m[4]) + ' ');
+  if (!line.slice(m[0].length).trim()) { t.setSelectionRange(start, pos); insertNoteText(t, ''); return; }
+  insertNoteText(t, '\n' + m[1] + (m[2] ? (Number(m[2]) + 1) + m[3] : m[4]) + ' ');
 }
-function insertNoteText(s) {
+function insertNoteText(t, s) {
   // execCommand keeps the browser's own undo (⌘Z) working inside the field
   if (!document.execCommand(s ? 'insertText' : 'delete', false, s)) {
-    notesText.setRangeText(s, notesText.selectionStart, notesText.selectionEnd, 'end');
-    notesText.dispatchEvent(new Event('input'));
+    t.setRangeText(s, t.selectionStart, t.selectionEnd, 'end');
+    t.dispatchEvent(new Event('input', { bubbles: true }));
   }
 }
 notesTitle.addEventListener('input', () => {
@@ -1543,21 +1930,69 @@ notesTitle.addEventListener('input', () => {
   n.text = notesTitle.value.replace(/\r/g, '').slice(0, LIMITS.textLength);
   fitNotesTitle(); noteEdited(); render();
 });
-notesText.addEventListener('input', () => {
-  const n = S.items[notes.id]; if (!n || S.readOnly) return;
-  const had = hasNote(n);
-  if (notesText.value) n.note = notesText.value; else delete n.note;
-  noteEdited(); updateNotesFoot();
-  if (had !== hasNote(n)) render(); // the badge on the topic appears or goes away
-});
-for (const f of [notesTitle, notesText]) f.addEventListener('blur', () => flushNotes(true));
+notesTitle.addEventListener('blur', () => flushNotes(true));
 notesTitle.addEventListener('keydown', e => {
   if (e.key === 'Escape') { e.preventDefault(); leaveNotesField(); }
-  else if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (e.metaKey || e.ctrlKey) leaveNotesField(); else notesText.focus(); }
+  else if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (e.metaKey || e.ctrlKey) leaveNotesField(); else focusSeg(segs()[0], 0); }
 });
-notesText.addEventListener('keydown', e => {
-  if (e.key === 'Escape' || (e.key === 'Enter' && (e.metaKey || e.ctrlKey))) { e.preventDefault(); leaveNotesField(); return; }
-  if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !e.isComposing) continueList(e);
+notesFlow.addEventListener('input', e => {
+  const t = e.target; if (t.tagName !== 'TEXTAREA' || !S.items[notes.id] || S.readOnly) return;
+  notes.picUndo = false; fitSeg(t); onFlowChanged(); segRoom(t);
+});
+notesFlow.addEventListener('focusin', e => { if (e.target.tagName === 'TEXTAREA') segRoom(e.target); });
+notesFlow.addEventListener('focusout', e => {
+  const t = e.target;
+  if (t.tagName === 'TEXTAREA') notes.caret = { seg: t, start: t.selectionStart, end: t.selectionEnd };
+  if (!notesFlow.contains(e.relatedTarget)) flushNotes(true);
+});
+notesFlow.addEventListener('keydown', e => {
+  const t = e.target, k = e.key, mod = e.metaKey || e.ctrlKey;
+  if (mod && !e.shiftKey && !e.altKey && k.toLowerCase() === 'z' && notes.picUndo) { // the last step was a picture: take it back
+    e.preventDefault(); e.stopPropagation(); notes.picUndo = false; notes.touched = false; undo(); return;
+  }
+  if (t.tagName === 'TEXTAREA') {
+    if (k === 'Escape' || (k === 'Enter' && mod)) { e.preventDefault(); leaveNotesField(); return; }
+    if (k === 'Enter' && !e.shiftKey && !e.altKey && !e.isComposing) { continueList(e, t); return; }
+    if (e.isComposing || e.shiftKey || e.altKey || mod || t.selectionStart !== t.selectionEnd) return;
+    const prev = t.previousElementSibling, next = t.nextElementSibling, pos = t.selectionStart;
+    // a picture counts like one character: the caret steps onto it, Backspace or Delete there removes it
+    if (prev && pos === 0 && (k === 'Backspace' || k === 'ArrowUp' || k === 'ArrowLeft')) { e.preventDefault(); prev.focus({ preventScroll: true }); prev.scrollIntoView({ block: 'nearest' }); }
+    else if (next && pos === t.value.length && (k === 'Delete' || k === 'ArrowDown' || k === 'ArrowRight')) { e.preventDefault(); next.focus({ preventScroll: true }); next.scrollIntoView({ block: 'nearest' }); }
+    return;
+  }
+  const fig = t.closest && t.closest('figure.nimg'); if (!fig) return;
+  e.stopPropagation();
+  if (k === 'Escape' || (k === 'Enter' && mod)) { e.preventDefault(); leaveNotesField(); }
+  else if (k === 'Backspace' || k === 'Delete') { e.preventDefault(); if (!S.readOnly && fig.dataset.img) removeNoteFigure(fig, true); }
+  else if (k === 'ArrowUp' || k === 'ArrowLeft') { e.preventDefault(); focusSeg(fig.previousElementSibling, 'end'); }
+  else if (k === 'ArrowDown' || k === 'ArrowRight') { e.preventDefault(); focusSeg(fig.nextElementSibling, 0); }
+  else if (k === 'Enter' || k === ' ') { e.preventDefault(); openViewer(fig.dataset.img); }
+});
+notesFlow.addEventListener('paste', e => {
+  if (S.readOnly) return;
+  const files = imageFilesFrom(e.clipboardData); if (!files.length) return;
+  const t = e.target;
+  e.preventDefault();
+  insertNoteImages(files, t.tagName === 'TEXTAREA' ? { seg: t, start: t.selectionStart, end: t.selectionEnd } : dropSpot(t));
+});
+notesFlow.addEventListener('pointerdown', e => { if (e.target === notesFlow && e.pointerType === 'mouse') e.preventDefault(); }); // keep the caret
+notesFlow.addEventListener('click', e => {
+  const x = e.target.closest('.nimg-x'), fig = e.target.closest('figure.nimg');
+  if (x && fig) { e.preventDefault(); if (fig.dataset.img && !S.readOnly) removeNoteFigure(fig, true); return; }
+  if (fig) { if (fig.dataset.img && e.target.tagName === 'IMG') openViewer(fig.dataset.img); return; }
+  if (e.target !== notesFlow) return;
+  const list = segs(); if (!list.length) return; // a click on the free space continues the text
+  const first = list[0], above = e.clientY < first.getBoundingClientRect().top;
+  focusSeg(above ? first : list[list.length - 1], above ? 0 : 'end');
+});
+notesImage.addEventListener('pointerdown', e => e.preventDefault()); // the caret stays where the picture goes
+notesImage.addEventListener('click', () => {
+  const a = document.activeElement;
+  let where = null;
+  if (a && a.tagName === 'TEXTAREA' && notesFlow.contains(a)) where = { seg: a, start: a.selectionStart, end: a.selectionEnd };
+  else if (a && a.matches && a.matches('figure.nimg')) where = dropSpot(a);
+  else if (notes.caret && notes.caret.seg.isConnected) where = notes.caret;
+  pickImages(Object.assign({ notes: true }, where));
 });
 notesPath.addEventListener('click', e => {
   const b = e.target.closest('[data-go]'), id = b && b.dataset.go; if (!id || !S.items[id]) return;
@@ -1789,12 +2224,23 @@ function saveFile(filename, data) {
   a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
-function exportJSON() {
+async function exportJSON() {
   if (!S.boardId) return;
-  const m = boards.find(b => b.id === S.boardId);
-  const items = [...Object.values(S.items).filter(n => !n.id.startsWith('__')), ...Object.values(foreign)];
+  const m = boards.find(b => b.id === S.boardId), name = fileBase();
+  const items = [...Object.values(S.items).filter(n => !n.id.startsWith('__')), ...Object.values(foreign)].map(clone);
   const data = { app: 'ideenraum', kind: 'board', format: FORMAT, name: m ? m.name : 'Board', exportedAt: new Date().toISOString(), items };
-  saveFile(fileBase() + '.json', JSON.stringify(data, null, 1));
+  const ids = [...imageIds(items)];
+  if (ids.length) { // the pictures go into the file, so it works on any other Ideenraum too
+    toast(`Export wird vorbereitet (${ids.length} ${ids.length === 1 ? 'Bild' : 'Bilder'}) …`, 60000);
+    data.images = {};
+    let missing = 0;
+    for (const id of ids) {
+      try { const r = await fetch(imageUrl(id), { credentials: 'same-origin' }); if (!r.ok) throw new Error(); data.images[id] = await blobToBase64(await r.blob()); }
+      catch (e) { missing++; }
+    }
+    toast(missing ? `Fertig. ${missing} Bild(er) fehlten auf dem Server.` : 'Fertig.', missing ? 5000 : 1500);
+  }
+  saveFile(name + '.json', JSON.stringify(data, null, 1));
 }
 $('#importFile').addEventListener('change', async e => {
   const f = e.target.files && e.target.files[0]; e.target.value = '';
@@ -1803,6 +2249,19 @@ $('#importFile').addEventListener('change', async e => {
   try { d = JSON.parse(await f.text()); } catch (err) { toast('Diese Datei ist kein Ideenraum-Export (JSON).', 4000); return; }
   if (Array.isArray(d)) d = { items: d };
   if (d && Array.isArray(d.items) && !(typeof d.name === 'string' && d.name.trim())) d.name = f.name.replace(/\.json$/i, '');
+  if (d && d.images && typeof d.images === 'object' && !Array.isArray(d.images)) {
+    // pictures one by one first: keeps each request small, however many photos the backup holds
+    const list = Object.entries(d.images).filter(([id, b64]) => IMAGE_RE.test(id) && typeof b64 === 'string');
+    delete d.images;
+    let failed = 0;
+    for (let i = 0; i < list.length; i++) {
+      toast(`Bilder werden übertragen: ${i + 1} von ${list.length} …`, 60000);
+      const [id, b64] = list[i];
+      try { if (await uploadImage(base64ToBlob(b64, IMAGE_TYPES[id.split('.').pop()])) !== id) failed++; }
+      catch (err) { failed++; if (err.status === 401) return; }
+    }
+    if (failed) toast(`${failed} Bild(er) aus der Datei ließen sich nicht übertragen.`, 5000);
+  }
   try {
     const r = await api('POST', '/api/import', d);
     const created = r.created || [];
@@ -1878,9 +2337,18 @@ async function exportPNG() {
   }
   const order = Object.values(S.items).filter(n => n.type !== 'link' && !n.id.startsWith('__') && L[n.id] && !(M[n.id] && M[n.id].hidden))
     .sort((a, b2) => (a.type === 'node' ? 1e5 : 0) + (a.z || 0) - ((b2.type === 'node' ? 1e5 : 0) + (b2.z || 0)));
+  const pics = {};
+  await Promise.all(order.filter(n => n.type === 'image' && n.src).map(async n => {
+    const el = els[n.id] && els[n.id]._img;
+    const im = el && el.complete && el.naturalWidth ? el : await preloadImage(imageUrl(n.src));
+    if (im.naturalWidth) pics[n.src] = im;
+  }));
   for (const n of order) {
     const r = L[n.id];
-    if (n.type === 'sticky') {
+    if (n.type === 'image') {
+      if (pics[n.src]) c.drawImage(pics[n.src], r.x, r.y, r.w, r.h);
+      else { c.fillStyle = T.surface; c.fillRect(r.x, r.y, r.w, r.h); c.strokeStyle = T.link; c.lineWidth = 1.5; c.setLineDash([6, 5]); c.strokeRect(r.x, r.y, r.w, r.h); c.setLineDash([]); }
+    } else if (n.type === 'sticky') {
       c.save(); c.shadowColor = 'rgba(0,0,0,.22)'; c.shadowBlur = 14; c.shadowOffsetY = 6;
       c.fillStyle = n.color || STICKY[0]; c.beginPath(); c.roundRect(r.x, r.y, r.w, r.h, 3); c.fill(); c.restore();
       const fs = parseFloat((els[n.id] && els[n.id].style.fontSize) || '20');
@@ -1941,7 +2409,10 @@ function sampleItems() {
 function toggleHelp() { const h = $('#help'); h.hidden = !h.hidden; closeMenus(); }
 const tip = document.createElement('div'); tip.className = 'tip'; tip.hidden = true; $('#app').appendChild(tip);
 document.querySelectorAll('.tool').forEach(b => {
-  b.addEventListener('click', () => { setTool(b.dataset.tool); stage.focus({ preventScroll: true }); });
+  b.addEventListener('click', () => {
+    if (b.dataset.act === 'image') { pickImages(); return; }
+    setTool(b.dataset.tool); stage.focus({ preventScroll: true });
+  });
   b.addEventListener('pointerenter', () => {
     tip.innerHTML = `${esc(b.dataset.tip)}<kbd>${b.dataset.key}</kbd>`; tip.hidden = false;
     const r = b.getBoundingClientRect(); tip.style.left = r.right + 10 + 'px'; tip.style.top = r.top + r.height / 2 - tip.offsetHeight / 2 + 'px';

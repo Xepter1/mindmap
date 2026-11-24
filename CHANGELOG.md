@@ -2,6 +2,17 @@
 
 Versionsnummern folgen dem Schema `Major.Minor.Patch`. Ändert sich das Datenformat, steht es hier dabei.
 
+## 1.3.0 – 2026-11-24
+
+Datenformat bleibt 1. Neu sind der Elementtyp `image` und Bilder in Notizen (eine Zeile `![Bild](bild:…)`). Die Bilddateien liegen im Datenordner unter `images/`. Ältere Versionen behalten Bilder unverändert, zeigen sie aber nicht an.
+
+- Bilder auf der Fläche: mit `⌘ V` einfügen, aus dem Finder oder der Fotomediathek hineinziehen oder über den Bild-Knopf (`B`) auswählen. Ziehen verschiebt ein Bild, die Ecke ändert die Größe, das Seitenverhältnis bleibt dabei erhalten. Ein Doppelklick zeigt das Bild groß.
+- Bilder in den Notizen: Sie landen an der Schreibmarke, auch beim Hineinziehen oder über den Bild-Knopf im Notizfeld. Ein Klick zeigt das Bild groß. Entfernen geht mit `×` oder mit `Entf`, und `⌘ Z` holt das Bild zurück.
+- Große Fotos werden vor dem Hochladen verkleinert (höchstens 2560 Pixel Kantenlänge). Bilder mit durchsichtigen Stellen behalten ihre Transparenz.
+- Neuer Knopf „Nach hinten“ für Haftnotizen, Formen, Texte und Bilder.
+- PNG-Export, JSON-Export und die komplette Sicherung enthalten die Bilder. Der Import überträgt sie wieder auf den Server.
+- Aufräumen: Ein Bild, das weder ein Board noch eine Sicherung noch der Papierkorb braucht, löscht der Server nach 7 Tagen.
+
 ## 1.2.0 – 2026-11-24
 
 Datenformat bleibt 1. Neu ist nur das optionale Feld `note` an Mindmap-Knoten, alte Boards funktionieren unverändert.

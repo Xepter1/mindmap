@@ -85,6 +85,10 @@
     <button class="tool" data-tool="pen" data-tip="Stift" data-key="P" aria-label="Stift">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5 18.5 9.5"/><path d="M4 20l1-4.5L16 4.5a2 2 0 0 1 3 0l.5.5a2 2 0 0 1 0 3L8.5 19Z"/></svg>
     </button>
+    <div class="sep"></div>
+    <button class="tool" data-act="image" data-tip="Bild einfügen" data-key="B" aria-label="Bild einfügen">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="15.5" cy="9.5" r="1.6"/><path d="m4 17.5 4.6-4.6a1.2 1.2 0 0 1 1.7 0L16 18.6M13.5 16l1.6-1.6a1.2 1.2 0 0 1 1.7 0l3.2 3.2"/></svg>
+    </button>
   </nav>
 
   <div class="panel zoom" aria-label="Zoom">
@@ -107,14 +111,19 @@
   <aside class="panel notes" id="notes" hidden aria-label="Notizen">
     <div class="notes-head">
       <span class="notes-kicker">Notizen</span>
-      <button class="btn" id="notesClose" title="Schließen (Esc)" aria-label="Notizen schließen">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
-      </button>
+      <div class="notes-actions">
+        <button class="btn" id="notesImage" title="Bild einfügen" aria-label="Bild in die Notizen einfügen">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="15.5" cy="9.5" r="1.6"/><path d="m4 17.5 4.6-4.6a1.2 1.2 0 0 1 1.7 0L16 18.6M13.5 16l1.6-1.6a1.2 1.2 0 0 1 1.7 0l3.2 3.2"/></svg>
+        </button>
+        <button class="btn" id="notesClose" title="Schließen (Esc)" aria-label="Notizen schließen">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
     </div>
     <div class="notes-body" id="notesBody">
       <nav class="notes-path" id="notesPath" aria-label="Übergeordnete Themen"></nav>
       <textarea class="notes-title" id="notesTitle" rows="1" maxlength="5000" spellcheck="false" aria-label="Thema"></textarea>
-      <textarea class="notes-text" id="notesText" aria-label="Notizen zum Thema"></textarea>
+      <div class="notes-flow" id="notesFlow"></div>
       <div class="notes-foot" id="notesFoot" hidden></div>
     </div>
     <p class="notes-empty" id="notesEmpty" hidden>Klicke ein Thema der Mindmap an, dann erscheinen hier seine Notizen.</p>
@@ -127,15 +136,17 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
     </button>
     <h2>So funktioniert Ideenraum</h2>
-    <p>Doppelklick auf eine freie Stelle startet eine neue Mindmap. Mit <kbd>Tab</kbd> und <kbd>Enter</kbd> baust du sie Ast für Ast aus, ohne die Maus anzufassen. Ein Doppelklick auf ein Thema öffnet rechts seine Notizen, etwa für einen Ablauf.</p>
+    <p>Doppelklick auf eine freie Stelle startet eine neue Mindmap. Mit <kbd>Tab</kbd> und <kbd>Enter</kbd> baust du sie Ast für Ast aus, ohne die Maus anzufassen. Ein Doppelklick auf ein Thema öffnet rechts seine Notizen, etwa für einen Ablauf. Bilder fügst du mit <kbd>⌘</kbd> <kbd>V</kbd> ein oder ziehst sie auf die Fläche oder in die Notizen.</p>
     <dl>
       <dt><kbd>Tab</kbd></dt><dd>Unterthema zum ausgewählten Knoten</dd>
       <dt><kbd>Enter</kbd></dt><dd>Geschwister-Thema (beim Bearbeiten: fertig)</dd>
       <dt><kbd>⇧</kbd> <kbd>Enter</kbd></dt><dd>Zeilenumbruch im Text</dd>
       <dt><kbd>F2</kbd> oder lostippen</dt><dd>Text eines Themas bearbeiten</dd>
-      <dt>Doppelklick</dt><dd>Auf ein Thema: Notizen öffnen. Auf Haftnotiz, Form oder Text: Text bearbeiten</dd>
+      <dt>Doppelklick</dt><dd>Auf ein Thema: Notizen öffnen. Auf ein Bild: groß anzeigen. Auf Haftnotiz, Form oder Text: Text bearbeiten</dd>
       <dt><kbd>⌘</kbd> <kbd>Enter</kbd></dt><dd>Zwischen Thema und Notizen wechseln</dd>
       <dt>Notizfeld</dt><dd>Folgt der Auswahl. Listen mit „1.“ oder „-“ setzt <kbd>Enter</kbd> fort</dd>
+      <dt>Bilder</dt><dd>Einfügen mit <kbd>⌘</kbd> <kbd>V</kbd>, hineinziehen oder mit <kbd>B</kbd> auswählen. In den Notizen landen sie an der Schreibmarke</dd>
+      <dt>Bild ändern</dt><dd>Ecke ziehen: Größe (Seitenverhältnis bleibt). In den Notizen: <kbd>Entf</kbd> oder × entfernt es</dd>
       <dt>Pfeiltasten</dt><dd>Zwischen Knoten wechseln, andere Elemente verschieben</dd>
       <dt>Knoten ziehen</dt><dd>Ins Leere ziehen verschiebt den Ast samt Unterthemen. Auf einen anderen Knoten ablegen hängt ihn um.</dd>
       <dt><kbd>⇧</kbd> + Knoten ziehen</dt><dd>Ins Leere ziehen löst ihn als eigene Mindmap</dd>
@@ -146,7 +157,7 @@
       <dt><kbd>⌘</kbd> <kbd>Z</kbd> / <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>Z</kbd></dt><dd>Rückgängig / Wiederholen</dd>
       <dt><kbd>⌘</kbd> <kbd>C</kbd> <kbd>V</kbd> <kbd>D</kbd></dt><dd>Kopieren, Einfügen, Duplizieren</dd>
       <dt><kbd>Entf</kbd></dt><dd>Auswahl löschen (Knoten samt Unterthemen)</dd>
-      <dt>V H M N T R L P</dt><dd>Werkzeuge: Auswählen, Verschieben, Mindmap, Haftnotiz, Text, Form, Verbindung, Stift</dd>
+      <dt>V H M N T R L P B</dt><dd>Werkzeuge: Auswählen, Verschieben, Mindmap, Haftnotiz, Text, Form, Verbindung, Stift, Bild</dd>
       <dt>Text einfügen</dt><dd>Mehrzeiliger Text bei ausgewähltem Knoten wird zu Unterthemen</dd>
     </dl>
     <div class="help-foot"><span id="appVersion"></span><button class="btn" id="logoutBtn" hidden>Abmelden</button></div>
@@ -173,8 +184,19 @@
     </div>
   </div>
 
+  <div class="viewer" id="viewer" hidden role="dialog" aria-modal="true" aria-label="Bild ansehen">
+    <img id="viewerImg" alt="Bild in voller Größe">
+    <div class="viewer-bar">
+      <a class="btn" id="viewerOpen" target="_blank" rel="noopener">Original öffnen</a>
+      <button class="btn" id="viewerClose" title="Schließen (Esc)" aria-label="Schließen">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+  </div>
+
   <div id="toast" hidden></div>
   <input type="file" id="importFile" accept=".json,application/json" hidden>
+  <input type="file" id="imageFile" accept="image/*" multiple hidden>
 </div>
 </body>
 </html>
